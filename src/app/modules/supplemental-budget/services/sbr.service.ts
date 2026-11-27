@@ -34,8 +34,12 @@ import { db, sanitizeFirestorePayload } from '../../../../services/firebase';
 import { logAuditEvent } from '../../audit/services/audit.service';
 import { createNotification } from '../../notifications/services/notification.service';
 import { getInstitutionalSignatories } from '../../signatories/services/signatory.service';
-import { resolveAdviserActorAuditContext } from '../../organizations/services/organization.service';
+import {
+  assertAdviserCanApproveForOrg,
+  resolveAdviserActorAuditContext,
+} from '../../organizations/services/organization.service';
 import { isSignatoryApplicableTo } from '../../signatories/types/signatory.types';
+import { resolveSignerAttribution } from '../../signatories/utils/signatory-substitute.utils';
 import {
   getDefaultWorkflowSettings,
   findMatchedSignatoryForStep,
@@ -54,6 +58,7 @@ import {
   computeSupplementalItemsTotal,
   doesSbrRequireSignatories,
   IN_FLIGHT_SBR_STATUSES,
+  isSbrDisbursedForLiquidation,
   matchesSbrSignatoryStep,
   mergeBaseAndSupplementalAllocations,
   normalizeSbrApprovalChain,
@@ -68,6 +73,7 @@ import type {
 } from '../types/sbr.types';
 
 export const SUPPLEMENTAL_BUDGET_COLLECTION = 'supplemental_budget_requests';
+const ACTIVITIES_COLLECTION = 'activities';
 const EVENTS_COLLECTION = 'events';
 const PROPOSALS_COLLECTION = 'activity_proposals';
 
@@ -99,13 +105,219 @@ async function getDocsSafe(q: any) {
   }
 }
 
+async function resolveOrgAdviserRecipientTokens(targetOrgId: string): Promise<string> {
+  if (!targetOrgId || ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'student_org'].includes(targetOrgId.toLowerCase())) {
+    return '';
+  }
+  const tokens: string[] = [`adviser:${targetOrgId}`];
+  try {
+    const orgSnap = await getDocSafe(doc(db, 'organizations', targetOrgId));
+    if (orgSnap.exists()) {
+      const oData = orgSnap.data() as any;
+      const candidates = [
+        oData?.adviser?.email,
+        oData?.adviser?.uid,
+        oData?.adviserEmail,
+        oData?.adviserUid,
+        oData?.secondaryAdviser?.email,
+        oData?.secondaryAdviser?.uid,
+        oData?.coAdviser?.email,
+        oData?.coAdviser?.uid,
+        oData?.coAdviserEmail,
+        oData?.coAdviserUid,
+      ];
+      candidates.forEach((c) => {
+        if (typeof c === 'string' && c.trim()) tokens.push(c.trim());
+      });
+    }
+  } catch (_) {}
+  return Array.from(new Set(tokens)).join('|');
+}
+
+async function notifyAdviserForSbrReview(params: {
+  sbrId: string;
+  eventId: string;
+  eventTitle: string;
+  referenceCode: string;
+  requestedAmount: number;
+  organizationId: string;
+  organizationName: string;
+  actor: SbrActor;
+  isResubmission?: boolean;
+}): Promise<void> {
+  if (!params.organizationId) return;
+  try {
+    const adviserTokens = await resolveOrgAdviserRecipientTokens(params.organizationId);
+    if (!adviserTokens) return;
+    await createNotification({
+      recipientRole: 'officer',
+      recipientId: adviserTokens,
+      targetOrgId: params.organizationId,
+      targetOrgName: params.organizationName,
+      type: 'document_submission',
+      category: 'activity_proposal',
+      title: params.isResubmission
+        ? `Revised Supplemental Budget for Review: ${params.eventTitle}`
+        : `New Supplemental Budget Request: ${params.eventTitle}`,
+      message: `${params.actor.name || 'An officer'} ${params.isResubmission ? 'resubmitted' : 'requested'} ${params.referenceCode} (+₱${params.requestedAmount.toLocaleString()}) for "${params.eventTitle}". Review and endorse before forwarding to SAS.`,
+      resourceId: params.eventId,
+      resourceType: 'event',
+      actionRoute: `/officer/events?tab=supplemental_budgets&id=${params.eventId}`,
+      metadata: { sbrId: params.sbrId, referenceCode: params.referenceCode },
+      senderId: params.actor.uid,
+      senderName: params.actor.name,
+      senderRoleTitle: 'Organization Officer',
+    });
+  } catch (err) {
+    console.warn('[sbr.service] Adviser SBR notification error:', err);
+  }
+}
+
+async function notifySasForSbrReview(params: {
+  sbrId: string;
+  eventId: string;
+  eventTitle: string;
+  referenceCode: string;
+  requestedAmount: number;
+  organizationId?: string;
+  organizationName: string;
+  actor: SbrActor;
+  forwardedByAdviser?: boolean;
+  isResubmission?: boolean;
+}): Promise<void> {
+  try {
+    await createNotification({
+      recipientRole: 'admin',
+      targetOrgId: params.organizationId || undefined,
+      targetOrgName: params.organizationName,
+      type: 'document_submission',
+      category: 'activity_proposal',
+      title: params.forwardedByAdviser
+        ? `Supplemental Budget for SAS Approval: ${params.eventTitle}`
+        : params.isResubmission
+        ? `Revised Supplemental Budget for SAS Approval: ${params.eventTitle}`
+        : `New Supplemental Budget for SAS Approval: ${params.eventTitle}`,
+      message: params.forwardedByAdviser
+        ? `${params.actor.name} (Club Adviser, ${params.organizationName}) endorsed ${params.referenceCode} (+₱${params.requestedAmount.toLocaleString()}) for "${params.eventTitle}" awaiting SAS approval.`
+        : `${params.organizationName} submitted ${params.referenceCode} (+₱${params.requestedAmount.toLocaleString()}) for "${params.eventTitle}" awaiting SAS approval.`,
+      resourceId: params.eventId,
+      resourceType: 'event',
+      actionRoute: `/home/event-approvals?tab=supplemental_budgets&id=${params.eventId}`,
+      metadata: { sbrId: params.sbrId, referenceCode: params.referenceCode },
+      senderId: params.actor.uid,
+      senderName: params.actor.name,
+      senderRoleTitle: params.actor.role === 'adviser' ? 'Club Adviser' : 'Organization Officer',
+    });
+  } catch (err) {
+    console.warn('[sbr.service] SAS Admin SBR notification error:', err);
+  }
+}
+
+async function notifySignatoriesForSbrStage(params: {
+  sbrId: string;
+  eventId: string;
+  eventTitle: string;
+  referenceCode: string;
+  requestedAmount: number;
+  organizationId?: string;
+  organizationName: string;
+  approvalChain: ProposalApprovalStep[];
+  stageIndex: number;
+  actor: SbrActor;
+}): Promise<void> {
+  try {
+    const stageSteps = (params.approvalChain || []).filter(
+      (s: any) =>
+        (s.stageIndex ?? 1) === params.stageIndex &&
+        s.status !== 'approved' &&
+        s.status !== 'endorsed' &&
+        s.status !== 'waived'
+    );
+    for (const signer of stageSteps) {
+      const recipientTokens = [signer.signatoryUid, signer.signatoryEmail].filter(Boolean).join('|');
+      if (!recipientTokens) continue;
+      await createNotification({
+        recipientRole: 'signatory',
+        recipientId: recipientTokens,
+        targetOrgId: params.organizationId || undefined,
+        targetOrgName: params.organizationName,
+        type: 'signatory_required',
+        category: 'activity_proposal',
+        title: `Supplemental Budget Awaiting Signature: ${params.eventTitle}`,
+        message: `${params.organizationName} submitted ${params.referenceCode} (+₱${params.requestedAmount.toLocaleString()}) for "${params.eventTitle}" (Stage ${params.stageIndex}).`,
+        resourceId: params.eventId,
+        resourceType: 'event',
+        actionRoute: '/signatory/proposals',
+        metadata: { sbrId: params.sbrId, referenceCode: params.referenceCode },
+        senderId: params.actor.uid,
+        senderName: params.actor.name,
+        senderRoleTitle: params.actor.roleTitle || (params.actor.role === 'admin' ? 'SAS Administrator' : 'Signatory'),
+      });
+    }
+  } catch (err) {
+    console.warn('[sbr.service] Signatory SBR notification error:', err);
+  }
+}
+
+async function notifyOrgForSbrStatus(params: {
+  sbrId: string;
+  eventId: string;
+  organizationId?: string;
+  organizationName: string;
+  type: 'document_approved' | 'document_returned' | 'document_rejected' | 'document_submission';
+  title: string;
+  message: string;
+  actor: SbrActor;
+  isUrgent?: boolean;
+}): Promise<void> {
+  if (!params.organizationId || ['sas', 'sas_admin', 'sao', 'sao_admin'].includes(params.organizationId.toLowerCase())) {
+    return;
+  }
+  try {
+    await createNotification({
+      recipientRole: 'officer',
+      targetOrgId: params.organizationId,
+      targetOrgName: params.organizationName,
+      type: params.type,
+      category: 'activity_proposal',
+      title: params.title,
+      message: params.message,
+      resourceId: params.eventId,
+      resourceType: 'event',
+      actionRoute: `/officer/events?tab=supplemental_budgets&id=${params.eventId}`,
+      metadata: { sbrId: params.sbrId },
+      isUrgent: Boolean(params.isUrgent),
+      senderId: params.actor.uid,
+      senderName: params.actor.name,
+      senderRoleTitle:
+        params.actor.roleTitle ||
+        (params.actor.role === 'admin'
+          ? 'SAS Administrator'
+          : params.actor.role === 'adviser'
+          ? 'Club Adviser'
+          : 'Signatory'),
+    });
+  } catch (err) {
+    console.warn('[sbr.service] Org SBR notification error:', err);
+  }
+}
+
 export interface SbrActor {
   uid: string;
+  id?: string;
   name: string;
   email?: string;
   role: 'officer' | 'adviser' | 'admin' | 'signatory';
   roleTitle?: string;
   signatureUrl?: string;
+  canApproveProposal?: boolean;
+  actingAsSubstitute?: boolean;
+  substituteUid?: string;
+  delegatedForSignatoryId?: string;
+  delegatedForSignatoryUid?: string;
+  delegatedForSignatoryName?: string;
+  delegatedForSignatoryEmail?: string;
+  delegatedForRoleTitle?: string;
 }
 
 function makeHistoryEntry(
@@ -148,7 +360,7 @@ export async function resolveDefaultSbrPipelineFromParentAp(params: {
 
   // 2. Fetch parent AP / Event doc from Firestore to copy its exact pipeline
   if (params.eventId) {
-    for (const colName of [PROPOSALS_COLLECTION, EVENTS_COLLECTION]) {
+    for (const colName of [ACTIVITIES_COLLECTION, PROPOSALS_COLLECTION, EVENTS_COLLECTION]) {
       try {
         const snap = await getDoc(doc(db, colName, params.eventId));
         if (snap.exists()) {
@@ -310,15 +522,17 @@ export async function syncParentEventSupplementalRollup(eventId: string): Promis
     .filter((s) => !s.isDeleted);
 
   const approvedSbrs = allSbrs.filter((s) => s.status === 'approved');
+  const disbursedSbrs = approvedSbrs.filter((s) => isSbrDisbursedForLiquidation(s));
   const hasPending = allSbrs.some((s) => IN_FLIGHT_SBR_STATUSES.has(s.status));
+  const hasPendingDisbursement = approvedSbrs.some((s) => !isSbrDisbursedForLiquidation(s));
   const supplementalBudgetTotal = Math.round(
-    approvedSbrs.reduce((sum, s) => sum + Math.max(0, Number(s.requestedAmount) || 0), 0) * 100
+    disbursedSbrs.reduce((sum, s) => sum + Math.max(0, Number(s.requestedAmount) || 0), 0) * 100
   ) / 100;
 
   const supplementalAllocations: SupplementalEventAllocation[] = [];
   const supplementalExpenseItems: SupplementalEventExpenseItem[] = [];
   let hasSupplementalSchoolBudget = false;
-  approvedSbrs.forEach((s) => {
+  disbursedSbrs.forEach((s) => {
     if (s.fundingSource === 'school_budget') hasSupplementalSchoolBudget = true;
     (s.allocations || []).forEach((a) => {
       supplementalAllocations.push({
@@ -375,13 +589,14 @@ export async function syncParentEventSupplementalRollup(eventId: string): Promis
       effectiveApprovedBudget,
       supplementalAllocations,
       supplementalExpenseItems,
-      approvedSupplementalCount: approvedSbrs.length,
+      approvedSupplementalCount: disbursedSbrs.length,
       hasPendingSupplementalRequest: hasPending,
+      hasPendingSupplementalDisbursement: hasPendingDisbursement,
       hasSupplementalSchoolBudget,
       updatedAt: serverTimestamp(),
     };
 
-    // If originally zero_budget / liquidation-exempt and now has approved supplemental funds, un-exempt automatically
+    // If originally zero_budget / liquidation-exempt and now has disbursed/acknowledged supplemental funds, un-exempt automatically
     if (effectiveApprovedBudget > 0 && (evData.liquidationRequired === false || evData.fundingSource === 'zero_budget')) {
       patch.liquidationRequired = true;
       if (!evData.liquidationStatus || evData.liquidationStatus === 'none_required') {
@@ -392,7 +607,11 @@ export async function syncParentEventSupplementalRollup(eventId: string): Promis
     await updateDoc(ref, sanitizeFirestorePayload(patch));
   };
 
-  await Promise.all([syncDoc(EVENTS_COLLECTION), syncDoc(PROPOSALS_COLLECTION)]);
+  await Promise.all([
+    syncDoc(ACTIVITIES_COLLECTION),
+    syncDoc(EVENTS_COLLECTION),
+    syncDoc(PROPOSALS_COLLECTION),
+  ]);
 }
 
 /**
@@ -582,7 +801,7 @@ export async function createSupplementalBudgetRequest(
     semester: payload.semester || null,
     baseApprovedBudget: Math.max(0, Number(payload.baseApprovedBudget) || 0),
     priorSupplementalTotal: Math.max(0, Number(payload.priorSupplementalTotal) || 0),
-    reasonCategory: payload.reasonCategory,
+    reasonCategory: payload.reasonCategory || 'other',
     justification: payload.justification.trim(),
     additionalItems: payload.additionalItems,
     requestedAmount,
@@ -644,16 +863,41 @@ export async function createSupplementalBudgetRequest(
     });
   } catch {}
 
-  if (status === 'for_sas_review') {
-    try {
-      await createNotification({
-        recipientRole: 'admin',
-        title: 'Supplemental Budget Request Submitted',
-        message: `${payload.organizationName} submitted ${referenceCode} (+₱${requestedAmount.toLocaleString()}) for "${payload.eventTitle}".`,
-        type: 'proposal',
-        relatedId: payload.eventId,
-      });
-    } catch {}
+  if (status === 'for_adviser_review') {
+    await notifyAdviserForSbrReview({
+      sbrId: docRef.id,
+      eventId: payload.eventId,
+      eventTitle: payload.eventTitle,
+      referenceCode,
+      requestedAmount,
+      organizationId: record.organizationId,
+      organizationName: record.organizationName,
+      actor,
+    });
+  } else if (status === 'for_sas_review') {
+    await notifySasForSbrReview({
+      sbrId: docRef.id,
+      eventId: payload.eventId,
+      eventTitle: payload.eventTitle,
+      referenceCode,
+      requestedAmount,
+      organizationId: record.organizationId,
+      organizationName: record.organizationName,
+      actor,
+    });
+  } else if (status === 'pending_signatories') {
+    await notifySignatoriesForSbrStage({
+      sbrId: docRef.id,
+      eventId: payload.eventId,
+      eventTitle: payload.eventTitle,
+      referenceCode,
+      requestedAmount,
+      organizationId: record.organizationId,
+      organizationName: record.organizationName,
+      approvalChain,
+      stageIndex: 1,
+      actor,
+    });
   }
 
   return created;
@@ -734,11 +978,11 @@ export async function updateSupplementalBudgetRequest(
     : [];
 
   const patch: Record<string, any> = {
-    reasonCategory: payload.reasonCategory ?? current.reasonCategory,
+    reasonCategory: payload.reasonCategory ?? current.reasonCategory ?? 'other',
     justification: (payload.justification ?? current.justification).trim(),
     additionalItems: nextItems,
     requestedAmount,
-    supportingAttachments: payload.supportingAttachments ?? current.supportingAttachments,
+    supportingAttachments: payload.supportingAttachments ?? current.supportingAttachments ?? [],
     fundingSource,
     allocations: normalizedAllocations,
     miscFeeBucketId: miscIds[0] || null,
@@ -766,6 +1010,47 @@ export async function updateSupplementalBudgetRequest(
   } else {
     await syncParentEventSupplementalRollup(current.eventId);
   }
+
+  if (payload.submitImmediately) {
+    if (nextStatus === 'for_adviser_review') {
+      await notifyAdviserForSbrReview({
+        sbrId,
+        eventId: current.eventId,
+        eventTitle: current.eventTitle,
+        referenceCode: current.referenceCode,
+        requestedAmount,
+        organizationId: current.organizationId,
+        organizationName: current.organizationName,
+        actor,
+        isResubmission: wasReturned,
+      });
+    } else if (nextStatus === 'for_sas_review') {
+      await notifySasForSbrReview({
+        sbrId,
+        eventId: current.eventId,
+        eventTitle: current.eventTitle,
+        referenceCode: current.referenceCode,
+        requestedAmount,
+        organizationId: current.organizationId,
+        organizationName: current.organizationName,
+        actor,
+        isResubmission: wasReturned,
+      });
+    } else if (nextStatus === 'pending_signatories') {
+      await notifySignatoriesForSbrStage({
+        sbrId,
+        eventId: current.eventId,
+        eventTitle: current.eventTitle,
+        referenceCode: current.referenceCode,
+        requestedAmount,
+        organizationId: current.organizationId,
+        organizationName: current.organizationName,
+        approvalChain,
+        stageIndex: 1,
+        actor,
+      });
+    }
+  }
 }
 
 /**
@@ -778,6 +1063,7 @@ export async function approveAndForwardSbrByAdviser(
 ): Promise<void> {
   const current = await getSupplementalBudgetById(sbrId);
   if (!current) throw new Error('Supplemental Budget Request not found.');
+  await assertAdviserCanApproveForOrg(current.organizationId, adviser);
 
   const nowIso = new Date().toISOString();
   const auditCtx = await resolveAdviserActorAuditContext(current.organizationId, adviser);
@@ -819,15 +1105,28 @@ export async function approveAndForwardSbrByAdviser(
 
   await syncParentEventSupplementalRollup(current.eventId);
 
-  try {
-    await createNotification({
-      recipientRole: 'admin',
-      title: 'Supplemental Budget Forwarded by Adviser',
-      message: `${adviser.name} endorsed ${current.referenceCode} (+₱${current.requestedAmount.toLocaleString()}) for "${current.eventTitle}".`,
-      type: 'proposal',
-      relatedId: current.eventId,
-    });
-  } catch {}
+  await notifySasForSbrReview({
+    sbrId,
+    eventId: current.eventId,
+    eventTitle: current.eventTitle,
+    referenceCode: current.referenceCode,
+    requestedAmount: current.requestedAmount,
+    organizationId: current.organizationId,
+    organizationName: current.organizationName,
+    actor: adviser,
+    forwardedByAdviser: true,
+  });
+
+  await notifyOrgForSbrStatus({
+    sbrId,
+    eventId: current.eventId,
+    organizationId: current.organizationId,
+    organizationName: current.organizationName,
+    type: 'document_approved',
+    title: `Supplemental Budget Endorsed by Adviser: ${current.eventTitle}`,
+    message: `${adviser.name} endorsed ${current.referenceCode} (+₱${current.requestedAmount.toLocaleString()}) and forwarded it to SAS for approval.`,
+    actor: adviser,
+  });
 }
 
 /**
@@ -840,6 +1139,7 @@ export async function returnSbrByAdviser(
 ): Promise<void> {
   const current = await getSupplementalBudgetById(sbrId);
   if (!current) throw new Error('Supplemental Budget Request not found.');
+  await assertAdviserCanApproveForOrg(current.organizationId, adviser);
 
   const nowIso = new Date().toISOString();
   await updateDoc(
@@ -868,6 +1168,20 @@ export async function returnSbrByAdviser(
   );
 
   await syncParentEventSupplementalRollup(current.eventId);
+
+  await notifyOrgForSbrStatus({
+    sbrId,
+    eventId: current.eventId,
+    organizationId: current.organizationId,
+    organizationName: current.organizationName,
+    type: 'document_returned',
+    title: `Supplemental Budget Returned by Adviser: ${current.eventTitle}`,
+    message: remarks?.trim()
+      ? `${adviser.name} returned ${current.referenceCode} for revision: "${remarks.trim()}"`
+      : `${adviser.name} returned ${current.referenceCode} for revision.`,
+    actor: adviser,
+    isUrgent: true,
+  });
 }
 
 /**
@@ -880,6 +1194,7 @@ export async function rejectSbrByAdviser(
 ): Promise<void> {
   const current = await getSupplementalBudgetById(sbrId);
   if (!current) throw new Error('Supplemental Budget Request not found.');
+  await assertAdviserCanApproveForOrg(current.organizationId, adviser);
 
   const nowIso = new Date().toISOString();
   await updateDoc(
@@ -908,6 +1223,18 @@ export async function rejectSbrByAdviser(
   );
 
   await syncParentEventSupplementalRollup(current.eventId);
+
+  await notifyOrgForSbrStatus({
+    sbrId,
+    eventId: current.eventId,
+    organizationId: current.organizationId,
+    organizationName: current.organizationName,
+    type: 'document_rejected',
+    title: `Supplemental Budget Rejected by Adviser: ${current.eventTitle}`,
+    message: `${adviser.name} rejected ${current.referenceCode}: "${reason.trim()}"`,
+    actor: adviser,
+    isUrgent: true,
+  });
 }
 
 /**
@@ -1005,6 +1332,30 @@ export async function endorseAndForwardSbrBySas(
   );
 
   await syncParentEventSupplementalRollup(current.eventId);
+
+  await notifySignatoriesForSbrStage({
+    sbrId,
+    eventId: current.eventId,
+    eventTitle: current.eventTitle,
+    referenceCode: current.referenceCode,
+    requestedAmount: current.requestedAmount,
+    organizationId: current.organizationId,
+    organizationName: current.organizationName,
+    approvalChain: chain,
+    stageIndex: 1,
+    actor: admin,
+  });
+
+  await notifyOrgForSbrStatus({
+    sbrId,
+    eventId: current.eventId,
+    organizationId: current.organizationId,
+    organizationName: current.organizationName,
+    type: 'document_approved',
+    title: `Supplemental Budget Endorsed by SAS: ${current.eventTitle}`,
+    message: `${admin.name} (SAS) vetted ${current.referenceCode} (+₱${current.requestedAmount.toLocaleString()}) and forwarded it to Institutional Signatories.`,
+    actor: admin,
+  });
 }
 
 /**
@@ -1037,6 +1388,20 @@ export async function returnSbrBySas(
   );
 
   await syncParentEventSupplementalRollup(current.eventId);
+
+  await notifyOrgForSbrStatus({
+    sbrId,
+    eventId: current.eventId,
+    organizationId: current.organizationId,
+    organizationName: current.organizationName,
+    type: 'document_returned',
+    title: `Supplemental Budget Returned by SAS: ${current.eventTitle}`,
+    message: remarks?.trim()
+      ? `${admin.name} (SAS) returned ${current.referenceCode} for revision: "${remarks.trim()}"`
+      : `${admin.name} (SAS) returned ${current.referenceCode} for revision.`,
+    actor: admin,
+    isUrgent: true,
+  });
 }
 
 /**
@@ -1069,6 +1434,18 @@ export async function rejectSbrBySas(
   );
 
   await syncParentEventSupplementalRollup(current.eventId);
+
+  await notifyOrgForSbrStatus({
+    sbrId,
+    eventId: current.eventId,
+    organizationId: current.organizationId,
+    organizationName: current.organizationName,
+    type: 'document_rejected',
+    title: `Supplemental Budget Rejected by SAS: ${current.eventTitle}`,
+    message: `${admin.name} (SAS) rejected ${current.referenceCode}: "${reason.trim()}"`,
+    actor: admin,
+    isUrgent: true,
+  });
 }
 
 /**
@@ -1128,6 +1505,19 @@ export async function processSbrSignatoryDecision(
       })
     );
     await syncParentEventSupplementalRollup(current.eventId);
+    await notifyOrgForSbrStatus({
+      sbrId,
+      eventId: current.eventId,
+      organizationId: current.organizationId,
+      organizationName: current.organizationName,
+      type: 'document_returned',
+      title: `Supplemental Budget Returned by Signatory: ${current.eventTitle}`,
+      message: remarks?.trim()
+        ? `${signatory.name} returned ${current.referenceCode} for revision: "${remarks.trim()}"`
+        : `${signatory.name} returned ${current.referenceCode} for revision.`,
+      actor: signatory,
+      isUrgent: true,
+    });
     return { isFullyApproved: false };
   }
 
@@ -1167,6 +1557,17 @@ export async function processSbrSignatoryDecision(
       })
     );
     await syncParentEventSupplementalRollup(current.eventId);
+    await notifyOrgForSbrStatus({
+      sbrId,
+      eventId: current.eventId,
+      organizationId: current.organizationId,
+      organizationName: current.organizationName,
+      type: 'document_rejected',
+      title: `Supplemental Budget Rejected by Signatory: ${current.eventTitle}`,
+      message: `${signatory.name} rejected ${current.referenceCode}: "${(remarks || '').trim()}"`,
+      actor: signatory,
+      isUrgent: true,
+    });
     return { isFullyApproved: false };
   }
 
@@ -1221,13 +1622,24 @@ export async function processSbrSignatoryDecision(
     }
 
     const nowIso = new Date().toISOString();
+    const signerAttr = resolveSignerAttribution(signatory);
     let updatedStep: any = {
       ...targetStep,
       status: newStatus,
       signedAt: nowIso,
-      signedByUid: signatory.uid,
-      signedByName: signatory.name,
-      ...(signatory.email ? { signedByEmail: signatory.email } : {}),
+      signedByUid: signerAttr.signerUid || signatory.uid,
+      signedByName: signerAttr.signerName || signatory.name,
+      signatoryName: signerAttr.signerName || signatory.name,
+      ...(signerAttr.signerEmail || signatory.email ? { signedByEmail: signerAttr.signerEmail || signatory.email, signatoryEmail: signerAttr.signerEmail || signatory.email } : {}),
+      ...(signerAttr.actedAsSubstitute
+        ? {
+            roleTitle: signerAttr.signerRoleTitle,
+            actedAsSubstitute: true,
+            originalSignatoryUid: signerAttr.originalSignatoryUid || targetStep.signatoryUid || '',
+            originalSignatoryName: signerAttr.originalSignatoryName || targetStep.signatoryName || '',
+            originalSignatoryEmail: signerAttr.originalSignatoryEmail || targetStep.signatoryEmail || '',
+          }
+        : {}),
       ...(signatory.signatureUrl ? { signatureUrl: signatory.signatureUrl } : {}),
       ...(remarks ? { remarks: remarks.trim() } : {}),
     };
@@ -1377,6 +1789,19 @@ export async function processSbrSignatoryDecision(
 
   if (txResult.isFullyApproved && !txResult.wasAlreadyApproved) {
     await finalizeApprovedSupplementalBudget(sbrId, signatory, txResult.projectedSbr);
+  } else if (!txResult.isFullyApproved && txResult.projectedSbr.currentStageIndex !== current.currentStageIndex) {
+    await notifySignatoriesForSbrStage({
+      sbrId,
+      eventId: current.eventId,
+      eventTitle: current.eventTitle,
+      referenceCode: current.referenceCode,
+      requestedAmount: current.requestedAmount,
+      organizationId: current.organizationId,
+      organizationName: current.organizationName,
+      approvalChain: txResult.projectedSbr.approvalChain || [],
+      stageIndex: txResult.projectedSbr.currentStageIndex ?? 1,
+      actor: signatory,
+    });
   }
 
   return {
@@ -1388,10 +1813,10 @@ export async function processSbrSignatoryDecision(
 
 /**
  * Finalizes an approved Supplemental Budget Request:
- * 1. Idempotently deducts the supplemental delta from the exact funding ledger/bucket(s)
- *    using unique `sbr_${sbrId}` keys so it never collides with the parent AP deduction.
- * 2. Marks the SBR `approved` and `ledgerDeducted: true`.
- * 3. Rolls up additive supplemental totals & allocations onto the parent event doc.
+ * 1. Marks the SBR `approved` while deferring fund deduction & FL reflection until release:
+ *    - `organization_funds`: waits for Officer/Adviser acknowledgment & deduction in Finance Center.
+ *    - `school_budget` / `retained_sao_fund`: waits for dedicated Supplemental Disbursement Voucher upload.
+ * 2. Syncs parent event rollup status flags (`hasPendingSupplementalDisbursement`).
  */
 export async function finalizeApprovedSupplementalBudget(
   sbrId: string,
@@ -1401,92 +1826,8 @@ export async function finalizeApprovedSupplementalBudget(
   const sbr = preloadedSbr || (await getSupplementalBudgetById(sbrId));
   if (!sbr) throw new Error('Supplemental Budget Request not found.');
 
-  const deductionKeys: string[] = [...(sbr.ledgerDeductionKeys || [])];
   const isOrgFunds = sbr.fundingSource === 'organization_funds';
-  let ledgerDeductedNow = Boolean(sbr.ledgerDeducted);
-
-  // Organization Funds SBRs require explicit Club acknowledgment & deduction inside Officer Finance Center.
-  // School Budget (Misc Fees) and SAS Retained Fund SBRs encumber immediately upon final institutional approval.
-  if (!isOrgFunds && !sbr.ledgerDeducted && sbr.requestedAmount > 0) {
-    if (sbr.fundingSource === 'retained_sao_fund') {
-      const ledgerId = await deductSupplementalBudget({
-        sbrId: sbr.id,
-        referenceCode: sbr.referenceCode,
-        eventId: sbr.eventId,
-        eventTitle: sbr.eventTitle,
-        organizationId: 'sas',
-        organizationName: 'Student Affairs & Services (SAS)',
-        isSasInstitutional: true,
-        amount: sbr.requestedAmount,
-        semesterId: sbr.semesterId,
-        schoolYear: sbr.schoolYear || undefined,
-        semester: sbr.semester || undefined,
-        performedBy: approver.name,
-      });
-      if (ledgerId) deductionKeys.push(`sao_ledger:${ledgerId}`);
-
-      await deductRetainedFundOnProposalApproval({
-        eventId: sbr.eventId,
-        eventTitle: `${sbr.eventTitle} (Supplemental ${sbr.referenceCode})`,
-        amount: sbr.requestedAmount,
-        organizationId: 'sas',
-        schoolYear: sbr.schoolYear || undefined,
-        semester: sbr.semester || undefined,
-        performedBy: approver.name,
-        ledgerDocIdOverride: `sbr_${sbr.id}`,
-      });
-      deductionKeys.push(`retained:sbr_${sbr.id}`);
-      ledgerDeductedNow = true;
-    } else if (sbr.fundingSource === 'school_budget') {
-      const miscAllocs = (sbr.allocations || []).filter((a) => a.fundType === 'misc_fee');
-      const bucketIds = miscAllocs.map((a) => a.bucketId).filter(Boolean);
-      const primaryBucketId = bucketIds[0] || sbr.miscFeeBucketId || '';
-      const bucketName =
-        miscAllocs.map((a) => a.bucketName).filter(Boolean).join(' + ') || sbr.miscFeeBucketName || '';
-
-      if (primaryBucketId || bucketName) {
-        await deductMiscFeeBucketOnDisbursement({
-          eventId: sbr.eventId,
-          eventTitle: `${sbr.eventTitle} (Supplemental ${sbr.referenceCode})`,
-          bucketId: primaryBucketId,
-          bucketIds,
-          bucketAllocations: miscAllocs.map((a) => ({
-            bucketId: a.bucketId,
-            bucketName: a.bucketName,
-            availableAmount: a.availableAmount,
-            allocatedAmount: a.allocatedAmount,
-          })),
-          bucketName,
-          amount: sbr.requestedAmount,
-          schoolYear: sbr.schoolYear || undefined,
-          semester: sbr.semester || undefined,
-          performedBy: approver.name,
-          ledgerDocIdOverride: `sbr_${sbr.id}`,
-        });
-        deductionKeys.push(`misc:sbr_${sbr.id}`);
-      }
-
-      // If SAS institutional event, also record in sao_ledger
-      if (sbr.isSasInstitutional) {
-        const ledgerId = await deductSupplementalBudget({
-          sbrId: sbr.id,
-          referenceCode: sbr.referenceCode,
-          eventId: sbr.eventId,
-          eventTitle: sbr.eventTitle,
-          organizationId: 'sas',
-          organizationName: 'Student Affairs & Services (SAS)',
-          isSasInstitutional: true,
-          amount: sbr.requestedAmount,
-          semesterId: sbr.semesterId,
-          schoolYear: sbr.schoolYear || undefined,
-          semester: sbr.semester || undefined,
-          performedBy: approver.name,
-        });
-        if (ledgerId) deductionKeys.push(`sao_ledger:${ledgerId}`);
-      }
-      ledgerDeductedNow = true;
-    }
-  }
+  const alreadyDeducted = Boolean(sbr.ledgerDeducted);
 
   await updateDoc(
     doc(db, SUPPLEMENTAL_BUDGET_COLLECTION, sbrId),
@@ -1494,9 +1835,9 @@ export async function finalizeApprovedSupplementalBudget(
       status: 'approved',
       isPendingSasVetting: false,
       isReturned: false,
-      ledgerDeducted: ledgerDeductedNow,
-      requiresClubLedgerAcknowledgment: isOrgFunds && !ledgerDeductedNow,
-      ledgerDeductionKeys: Array.from(new Set(deductionKeys)),
+      ledgerDeducted: alreadyDeducted,
+      requiresClubLedgerAcknowledgment: isOrgFunds && !alreadyDeducted,
+      requiresSupplementalVoucher: !isOrgFunds && !alreadyDeducted,
       approvedAt: serverTimestamp(),
       approvedBy: approver.name,
       history: [
@@ -1505,8 +1846,8 @@ export async function finalizeApprovedSupplementalBudget(
           'approved',
           approver,
           isOrgFunds
-            ? `Approved (+₱${sbr.requestedAmount.toLocaleString()}). Ready for Club acknowledgment & deduction in Finance Center.`
-            : `Approved (+₱${sbr.requestedAmount.toLocaleString()}) and encumbered from ${sbr.fundingSource.replace(/_/g, ' ')}.`
+            ? `Approved (+₱${sbr.requestedAmount.toLocaleString()}). Acknowledge & deduct in Officer Finance Center to release funds into Financial Liquidation.`
+            : `Approved (+₱${sbr.requestedAmount.toLocaleString()}). Upload the dedicated Supplemental Disbursement Voucher to deduct funds and reflect in Financial Liquidation.`
         ),
       ],
       updatedAt: serverTimestamp(),
@@ -1519,19 +1860,33 @@ export async function finalizeApprovedSupplementalBudget(
     await logAuditEvent({
       action: 'SUPPLEMENTAL_BUDGET_APPROVED',
       actionType: 'UPDATE',
-      details: `Approved Supplemental Budget ${sbr.referenceCode} (+₱${sbr.requestedAmount.toLocaleString()}) for "${sbr.eventTitle}" via ${sbr.fundingSource}.`,
+      details: `Approved Supplemental Budget ${sbr.referenceCode} (+₱${sbr.requestedAmount.toLocaleString()}) for "${sbr.eventTitle}" via ${sbr.fundingSource} (awaiting ${isOrgFunds ? 'Finance Center acknowledgment' : 'Supplemental Disbursement Voucher'}).`,
       performedBy: approver.name,
       userRole: approver.role,
       targetId: sbr.id,
       targetName: `${sbr.referenceCode} – ${sbr.eventTitle}`,
     });
   } catch {}
+
+  await notifyOrgForSbrStatus({
+    sbrId: sbr.id,
+    eventId: sbr.eventId,
+    organizationId: sbr.organizationId,
+    organizationName: sbr.organizationName,
+    type: 'document_approved',
+    title: `Supplemental Budget Approved: ${sbr.eventTitle}`,
+    message: isOrgFunds
+      ? `${sbr.referenceCode} (+₱${sbr.requestedAmount.toLocaleString()}) is approved! Go to Finance Center to acknowledge and deduct from Club Treasury so it reflects in Financial Liquidation.`
+      : `${sbr.referenceCode} (+₱${sbr.requestedAmount.toLocaleString()}) is approved! Upload its dedicated Supplemental Disbursement Voucher to deduct funds and reflect in Financial Liquidation.`,
+    actor: approver,
+  });
 }
 
 /**
  * Club Treasury Acknowledgment (Finance Center):
- * Explicitly acknowledges an approved `organization_funds` Supplemental Budget Request
- * and idempotently deducts the supplemental amount from `organization_ledger`.
+ * Explicitly acknowledges an approved `organization_funds` Supplemental Budget Request,
+ * idempotently deducts the supplemental amount from `organization_ledger`, and rolls up
+ * the funds onto the parent event so they now reflect in Financial Liquidation (FL).
  */
 export async function acknowledgeAndDeductOrgSupplementalBudget(
   sbrId: string,
@@ -1585,6 +1940,8 @@ export async function acknowledgeAndDeductOrgSupplementalBudget(
     })
   );
 
+  await syncParentEventSupplementalRollup(sbr.eventId);
+
   return ledgerId;
 }
 
@@ -1623,8 +1980,9 @@ export async function withdrawSupplementalBudgetRequest(
 }
 
 /**
- * Attaches a Supplemental Disbursement Voucher (or marks bundled with primary voucher)
- * on an approved `school_budget` SBR before Financial Liquidation.
+ * Attaches a dedicated Supplemental Disbursement Voucher on an approved `school_budget`
+ * or `retained_sao_fund` SBR, deducts the Misc Fee bucket / Retained Fund idempotently,
+ * and syncs the parent event rollup so the supplemental funds now reflect in Financial Liquidation.
  */
 export async function attachSupplementalDisbursementVoucher(
   sbrId: string,
@@ -1633,38 +1991,107 @@ export async function attachSupplementalDisbursementVoucher(
 ): Promise<void> {
   const current = await getSupplementalBudgetById(sbrId);
   if (!current) throw new Error('Supplemental Budget Request not found.');
+  if (current.status !== 'approved') {
+    throw new Error('Only approved Supplemental Budget Requests can attach a Disbursement Voucher.');
+  }
 
   const fullVoucher: SupplementalVoucherRecord = {
     ...voucher,
+    mode: 'separate',
     disbursedAmount: voucher.disbursedAmount ?? current.requestedAmount,
     attachedBy: actor.name,
     attachedByUid: actor.uid,
     attachedAt: new Date().toISOString(),
   };
 
-  await updateDoc(
-    doc(db, SUPPLEMENTAL_BUDGET_COLLECTION, sbrId),
-    sanitizeFirestorePayload({
-      disbursementVoucher: fullVoucher,
-      history: [
-        ...(current.history || []),
-        makeHistoryEntry(
-          'voucher_attached',
-          actor,
-          voucher.mode === 'bundled_with_primary'
-            ? 'Marked supplemental funds as bundled with primary Disbursement Voucher.'
-            : `Attached Supplemental Disbursement Voucher ${voucher.voucherNumber || voucher.chequeNumber || ''}.`
-        ),
-      ],
-      updatedAt: serverTimestamp(),
-    })
-  );
+  const deductionKeys: string[] = [...(current.ledgerDeductionKeys || [])];
+  let ledgerDeductedNow = Boolean(current.ledgerDeducted);
 
-  // Sync cheque number metadata onto the existing Misc Fee ledger entry without double-deducting
-  if (current.fundingSource === 'school_budget' && voucher.mode === 'separate' && voucher.chequeNumber) {
+  // Trigger fund deduction strictly upon uploading the dedicated Supplemental Disbursement Voucher
+  if (!ledgerDeductedNow && current.requestedAmount > 0) {
+    if (current.fundingSource === 'retained_sao_fund') {
+      const ledgerId = await deductSupplementalBudget({
+        sbrId: current.id,
+        referenceCode: current.referenceCode,
+        eventId: current.eventId,
+        eventTitle: current.eventTitle,
+        organizationId: 'sas',
+        organizationName: 'Student Affairs & Services (SAS)',
+        isSasInstitutional: true,
+        amount: current.requestedAmount,
+        semesterId: current.semesterId,
+        schoolYear: current.schoolYear || undefined,
+        semester: current.semester || undefined,
+        performedBy: actor.name,
+      });
+      if (ledgerId) deductionKeys.push(`sao_ledger:${ledgerId}`);
+
+      await deductRetainedFundOnProposalApproval({
+        eventId: current.eventId,
+        eventTitle: `${current.eventTitle} (Supplemental ${current.referenceCode})`,
+        amount: current.requestedAmount,
+        organizationId: 'sas',
+        schoolYear: current.schoolYear || undefined,
+        semester: current.semester || undefined,
+        performedBy: actor.name,
+        ledgerDocIdOverride: `sbr_${current.id}`,
+      });
+      deductionKeys.push(`retained:sbr_${current.id}`);
+      ledgerDeductedNow = true;
+    } else if (current.fundingSource === 'school_budget') {
+      const miscAllocs = (current.allocations || []).filter((a) => a.fundType === 'misc_fee');
+      const bucketIds = miscAllocs.map((a) => a.bucketId).filter(Boolean);
+      const primaryBucketId = bucketIds[0] || current.miscFeeBucketId || '';
+      const bucketName =
+        miscAllocs.map((a) => a.bucketName).filter(Boolean).join(' + ') || current.miscFeeBucketName || '';
+
+      if (primaryBucketId || bucketName) {
+        await deductMiscFeeBucketOnDisbursement({
+          eventId: current.eventId,
+          eventTitle: `${current.eventTitle} (Supplemental ${current.referenceCode})`,
+          bucketId: primaryBucketId,
+          bucketIds,
+          bucketAllocations: miscAllocs.map((a) => ({
+            bucketId: a.bucketId,
+            bucketName: a.bucketName,
+            availableAmount: a.availableAmount,
+            allocatedAmount: a.allocatedAmount,
+          })),
+          bucketName,
+          amount: current.requestedAmount,
+          schoolYear: current.schoolYear || undefined,
+          semester: current.semester || undefined,
+          chequeNumber: voucher.chequeNumber || undefined,
+          performedBy: actor.name,
+          ledgerDocIdOverride: `sbr_${current.id}`,
+        });
+        deductionKeys.push(`misc:sbr_${current.id}`);
+      }
+
+      if (current.isSasInstitutional) {
+        const ledgerId = await deductSupplementalBudget({
+          sbrId: current.id,
+          referenceCode: current.referenceCode,
+          eventId: current.eventId,
+          eventTitle: current.eventTitle,
+          organizationId: 'sas',
+          organizationName: 'Student Affairs & Services (SAS)',
+          isSasInstitutional: true,
+          amount: current.requestedAmount,
+          semesterId: current.semesterId,
+          schoolYear: current.schoolYear || undefined,
+          semester: current.semester || undefined,
+          performedBy: actor.name,
+        });
+        if (ledgerId) deductionKeys.push(`sao_ledger:${ledgerId}`);
+      }
+      ledgerDeductedNow = true;
+    }
+  } else if (current.fundingSource === 'school_budget' && voucher.chequeNumber) {
+    // Already deducted previously: sync cheque number metadata onto the existing Misc Fee ledger entry
     try {
       const miscLedgerRef = doc(db, MISC_FEE_LEDGER_COLLECTION, `sbr_${sbrId}`);
-      const miscSnap = await getDoc(miscLedgerRef);
+      const miscSnap = await getDocSafe(miscLedgerRef);
       if (miscSnap.exists()) {
         await updateDoc(miscLedgerRef, {
           chequeNumber: voucher.chequeNumber,
@@ -1672,6 +2099,27 @@ export async function attachSupplementalDisbursementVoucher(
       }
     } catch {}
   }
+
+  await updateDoc(
+    doc(db, SUPPLEMENTAL_BUDGET_COLLECTION, sbrId),
+    sanitizeFirestorePayload({
+      disbursementVoucher: fullVoucher,
+      ledgerDeducted: ledgerDeductedNow,
+      requiresSupplementalVoucher: false,
+      ledgerDeductionKeys: Array.from(new Set(deductionKeys)),
+      history: [
+        ...(current.history || []),
+        makeHistoryEntry(
+          'voucher_attached',
+          actor,
+          `Attached Supplemental Disbursement Voucher ${voucher.chequeNumber || voucher.voucherNumber || ''} and deducted ₱${current.requestedAmount.toLocaleString()}.`
+        ),
+      ],
+      updatedAt: serverTimestamp(),
+    })
+  );
+
+  await syncParentEventSupplementalRollup(current.eventId);
 }
 
 /**

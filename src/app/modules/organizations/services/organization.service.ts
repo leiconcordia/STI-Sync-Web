@@ -2,11 +2,13 @@ import {
   collection,
   doc,
   getDoc,
+  getDocFromCache,
   updateDoc,
   serverTimestamp,
   query,
   where,
   getDocs,
+  getDocsFromCache,
   limit,
   deleteField,
   writeBatch,
@@ -31,9 +33,41 @@ import {
   type SignatoryEmailRecord,
 } from '../utils/adviser-validation.utils';
 import { findDepartmentScopeConflicts } from '../utils/department-eligibility.utils';
-import { resolveEffectiveAdviserAuthority } from '../utils/adviser-authority.utils';
+import {
+  hasAssignedCoAdviser,
+  isPrimaryAdviserUnavailable,
+  resolveEffectiveAdviserAuthority,
+  validateAdviserPortalInactivation,
+  validateRemoveCoAdviser,
+  type AdviserPendingDocSummary,
+  type EffectiveAdviserAuthority,
+} from '../utils/adviser-authority.utils';
 
 const COLLECTION = 'organizations';
+
+async function getDocQuotaSafe(ref: any) {
+  try {
+    return await getDoc(ref);
+  } catch (err: any) {
+    const msg = String(err?.message || '').toLowerCase();
+    if (err?.code === 'resource-exhausted' || msg.includes('quota')) {
+      return await getDocFromCache(ref);
+    }
+    throw err;
+  }
+}
+
+async function getDocsQuotaSafe(q: any) {
+  try {
+    return await getDocs(q);
+  } catch (err: any) {
+    const msg = String(err?.message || '').toLowerCase();
+    if (err?.code === 'resource-exhausted' || msg.includes('quota')) {
+      return await getDocsFromCache(q);
+    }
+    throw err;
+  }
+}
 
 export interface AdviserUpdateOptions {
   action: 'keep' | 'assign' | 'unassign';
@@ -662,6 +696,20 @@ export const updateOrganization = async (
 
     // ── Handle Secondary Co-Adviser Assignment / Revocation if specified ──
     if (coAdviserUpdate && coAdviserUpdate.action !== 'keep') {
+      if (coAdviserUpdate.action === 'unassign') {
+        const existingSnap = await getDocQuotaSafe(docRef);
+        const existingOrgData = existingSnap.exists() ? (existingSnap.data() as any) : null;
+        if (existingOrgData && isPrimaryAdviserUnavailable(existingOrgData.adviserAvailability)) {
+          const pendingDocs = await getOrgPendingAdviserReviewDocuments(orgId);
+          const check = validateRemoveCoAdviser({
+            primaryUnavailable: true,
+            pendingDocuments: pendingDocs,
+          });
+          if (!check.allowed) {
+            throw new Error(check.reason || 'Cannot remove Co-Adviser while Primary Adviser is inactive with pending documents.');
+          }
+        }
+      }
       const orgName = payload.name || 'Organization';
       const updatedCoAdviser = await assignOrRevokeOrganizationAdviser(
         orgId,
@@ -776,66 +824,411 @@ export async function toggleOrgAutoPayableRule(orgId: string, ruleId: string, is
 }
 
 /**
- * Updates the Primary Club Adviser's availability status (Available vs Unavailable / On Leave)
- * and automatically notifies the assigned Co-Adviser whenever full approval authority transfers.
+ * Scans all 4 Adviser Checker workflows (AP, SBR, FL, PAR) for Officer submissions
+ * currently awaiting Club Adviser review for this organization.
+ */
+export async function getOrgPendingAdviserReviewDocuments(
+  orgId: string
+): Promise<AdviserPendingDocSummary[]> {
+  if (!orgId) return [];
+  const pending: AdviserPendingDocSummary[] = [];
+  const seen = new Set<string>();
+
+  const pushUnique = (docItem: AdviserPendingDocSummary) => {
+    const key = `${docItem.documentType}:${docItem.id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    pending.push(docItem);
+  };
+
+  const isAwaitingAdviser = (data: any): boolean => {
+    if (!data || data.isDeleted === true || data.isArchived === true) return false;
+    const pStatus = String(data.proposalStatus || '').toLowerCase();
+    const status = String(data.status || '').toLowerCase();
+    const advStatus = String(data.adviserReview?.status || '').toLowerCase();
+    if (['rejected', 'voided', 'cancelled', 'canceled', 'deleted', 'approved', 'approved_president'].includes(status)) {
+      return false;
+    }
+    return (
+      pStatus === 'for_adviser_review' ||
+      status === 'for_adviser_review' ||
+      status === 'pending_adviser_review' ||
+      (advStatus === 'pending' && status !== 'draft' && status !== 'returned' && status !== 'for_revision')
+    );
+  };
+
+  try {
+    // 1. Activity Proposals (activities)
+    const [actByHost, actByOrg] = await Promise.all([
+      getDocsQuotaSafe(query(collection(db, 'activities'), where('hostingOrgId', '==', orgId))).catch(() => null),
+      getDocsQuotaSafe(query(collection(db, 'activities'), where('organizationId', '==', orgId))).catch(() => null),
+    ]);
+    for (const snap of [actByHost, actByOrg]) {
+      snap?.docs.forEach((d) => {
+        const data = d.data();
+        if (isAwaitingAdviser(data)) {
+          pushUnique({
+            id: d.id,
+            documentType: 'proposal',
+            title: data.title || data.eventName || 'Untitled Activity Proposal',
+            code: data.referenceNo || data.proposalCode || 'AP',
+            submittedByName: data.createdByName || 'Officer',
+          });
+        }
+      });
+    }
+
+    // 2. Supplemental Budget Requests
+    const sbrSnap = await getDocsQuotaSafe(
+      query(
+        collection(db, 'supplemental_budget_requests'),
+        where('organizationId', '==', orgId),
+        where('status', '==', 'for_adviser_review')
+      )
+    ).catch(() => null);
+    sbrSnap?.docs.forEach((d) => {
+      const data = d.data();
+      if (data.isDeleted !== true) {
+        pushUnique({
+          id: d.id,
+          documentType: 'sbr',
+          title: data.eventTitle || data.title || 'Supplemental Budget Request',
+          code: data.referenceCode || 'SBR',
+          submittedByName: data.creatorName || 'Officer',
+        });
+      }
+    });
+
+    // 3. Financial Liquidations
+    const flSnap = await getDocsQuotaSafe(
+      query(collection(db, 'financial_liquidations'), where('organizationId', '==', orgId))
+    ).catch(() => null);
+    flSnap?.docs.forEach((d) => {
+      const data = d.data();
+      if (isAwaitingAdviser(data)) {
+        pushUnique({
+          id: d.id,
+          documentType: 'liquidation',
+          title: data.eventTitle || data.eventName || data.title || 'Financial Liquidation',
+          code: data.referenceNo || data.liquidationCode || 'FL',
+          submittedByName: data.createdByName || data.submittedByName || 'Officer',
+        });
+      }
+    });
+
+    // 4. Post-Activity Reports
+    const parSnap = await getDocsQuotaSafe(
+      query(collection(db, 'post_activity_reports'), where('organizationId', '==', orgId))
+    ).catch(() => null);
+    parSnap?.docs.forEach((d) => {
+      const data = d.data();
+      if (isAwaitingAdviser(data)) {
+        pushUnique({
+          id: d.id,
+          documentType: 'par',
+          title: data.eventTitle || data.eventName || data.title || 'Post-Activity Report',
+          code: data.referenceNo || data.parCode || 'PAR',
+          submittedByName: data.createdByName || 'Officer',
+        });
+      }
+    });
+  } catch (err) {
+    console.warn('[getOrgPendingAdviserReviewDocuments] Scan warning:', err);
+  }
+
+  return pending;
+}
+
+/**
+ * Backend defense-in-depth guard: verifies that the acting Club Adviser (Primary or Sub/Co-Adviser)
+ * currently holds active approval authority for the organization.
+ * - Blocks Sub/Co-Adviser while Primary Adviser is active.
+ * - Blocks Primary Adviser while their portal is set to Inactive (On Leave).
+ */
+export async function assertAdviserCanApproveForOrg(
+  orgId: string | null | undefined,
+  actor: { uid?: string; email?: string; name?: string; adviserRole?: OrgAdviserRole }
+): Promise<EffectiveAdviserAuthority | null> {
+  if (!orgId || ['sas', 'sao', 'admin', 'sas_admin', 'sao_admin'].includes(String(orgId).toLowerCase())) {
+    return null;
+  }
+  const snap = await getDocQuotaSafe(doc(db, COLLECTION, orgId));
+  if (!snap.exists()) return null;
+  const orgData = snap.data() as any;
+
+  const authority = resolveEffectiveAdviserAuthority({
+    organization: {
+      adviser: orgData.adviser || null,
+      coAdviser: orgData.coAdviser || null,
+      adviserAvailability: orgData.adviserAvailability || null,
+    },
+    viewerUid: actor.uid,
+    viewerEmail: actor.email,
+    viewerAdviserRole: actor.adviserRole,
+    isAdviserSession: true,
+  });
+
+  if (!authority.canReviewOfficerSubmissions) {
+    throw new Error(
+      authority.approvalBlockedReason ||
+        'Approval blocked: You do not currently hold active Club Adviser approval authority for this organization.'
+    );
+  }
+
+  return authority;
+}
+
+/**
+ * Updates the Primary Club Adviser's portal status (Active vs Inactive / On Leave),
+ * enforces the strict pending-document guardrail if no Substitute / Co-Adviser is assigned,
+ * and automatically transfers/reclaims approval authority with real-time notification.
+ */
+export async function setOrganizationAdviserPortalStatus(
+  orgId: string,
+  options: {
+    inactive: boolean;
+    reason?: string;
+  },
+  updatedBy: string
+): Promise<{
+  success: boolean;
+  blocked?: boolean;
+  error?: string;
+  pendingDocuments?: AdviserPendingDocSummary[];
+  availability?: OrgAdviserAvailability;
+}> {
+  if (!orgId) return { success: false, error: 'Organization ID is required.' };
+  try {
+    const orgRef = doc(db, COLLECTION, orgId);
+    const orgSnap = await getDocQuotaSafe(orgRef);
+    if (!orgSnap.exists()) return { success: false, error: 'Organization not found.' };
+    const orgData = orgSnap.data() as any;
+
+    if (options.inactive) {
+      const pendingDocuments = await getOrgPendingAdviserReviewDocuments(orgId);
+      const validation = validateAdviserPortalInactivation({
+        hasCoAdviser: hasAssignedCoAdviser(orgData),
+        pendingDocuments,
+      });
+      if (!validation.allowed) {
+        return {
+          success: false,
+          blocked: true,
+          error: validation.reason || 'Cannot deactivate Adviser Portal while pending documents exist without a Substitute Adviser.',
+          pendingDocuments,
+        };
+      }
+    }
+
+    const cleanAvailability: OrgAdviserAvailability = {
+      primaryStatus: options.inactive ? 'unavailable' : 'available',
+      ...(options.inactive ? { unavailableReason: options.reason?.trim() || 'On Leave' } : {}),
+      updatedBy: updatedBy || 'Club Adviser',
+      updatedAt: new Date().toISOString(),
+    };
+
+    await updateDoc(orgRef, {
+      adviserAvailability: cleanAvailability,
+      updatedAt: serverTimestamp(),
+    });
+
+    // Notify Substitute / Co-Adviser when authority transfers or returns to Standby
+    const coAdviser = orgData.coAdviser;
+    if (coAdviser?.email || coAdviser?.authUid) {
+      const isNowInactive = cleanAvailability.primaryStatus === 'unavailable';
+      void createNotification({
+        recipientRole: 'officer',
+        recipientId: [coAdviser.authUid, String(coAdviser.email || '').trim().toLowerCase(), `adviser:${orgId}`]
+          .filter(Boolean)
+          .join('|'),
+        targetOrgId: orgId,
+        targetOrgName: orgData.name || 'Organization',
+        type: 'system_alert',
+        category: 'system',
+        title: isNowInactive
+          ? `Approval Authority Transferred — ${orgData.acronym || orgData.name}`
+          : `Primary Adviser Active Again — ${orgData.acronym || orgData.name}`,
+        message: isNowInactive
+          ? `${orgData.adviser?.name || 'The Primary Club Adviser'} set their Adviser Portal to Inactive (${cleanAvailability.unavailableReason || 'On Leave'}). Approval authority for ${orgData.name || 'this organization'} has been transferred to you as Acting Club Adviser.`
+          : `${orgData.adviser?.name || 'The Primary Club Adviser'} reactivated their Adviser Portal. Approval authority has returned to the Primary Adviser and your account is back in Standby Mode.`,
+        resourceId: orgId,
+        resourceType: 'system',
+        actionRoute: '/officer/events',
+        senderName: updatedBy || 'Club Adviser',
+        senderRoleTitle: 'Club Adviser Governance',
+      }).catch(() => {});
+    }
+
+    return { success: true, availability: cleanAvailability };
+  } catch (err: any) {
+    console.error('[setOrganizationAdviserPortalStatus] Error:', err);
+    return { success: false, error: err?.message || 'Failed to update Adviser Portal status.' };
+  }
+}
+
+/**
+ * Assign or replace an organization's Substitute / Co-Adviser directly from Adviser Settings (or Admin).
+ * Reuses existing account & e-signature when available; provisions new credentials with the provided
+ * default password when the employee does not yet have an STI Sync account.
+ */
+export async function assignOrganizationSubAdviser(
+  orgId: string,
+  employeePayload: {
+    name: string;
+    firstName?: string;
+    lastName?: string;
+    middleName?: string;
+    middleInitial?: string;
+    email: string;
+    employeeId?: string;
+    temporaryPassword?: string;
+  },
+  actorName: string
+): Promise<{
+  success: boolean;
+  coAdviser?: OrgAdviserData;
+  accountProvisioning?: 'created' | 'reused';
+  temporaryPassword?: string;
+  error?: string;
+}> {
+  if (!orgId) return { success: false, error: 'Organization ID is required.' };
+  try {
+    const orgRef = doc(db, COLLECTION, orgId);
+    const orgSnap = await getDocQuotaSafe(orgRef);
+    if (!orgSnap.exists()) return { success: false, error: 'Organization not found.' };
+    const orgData = orgSnap.data() as any;
+
+    const cleanEmail = (employeePayload.email || '').trim().toLowerCase();
+    const primaryEmail = String(orgData.adviser?.email || '').trim().toLowerCase();
+    if (cleanEmail && primaryEmail && cleanEmail === primaryEmail) {
+      return { success: false, error: 'The Primary Club Adviser cannot assign themselves as their own substitute.' };
+    }
+
+    const updatedCoAdviser = await assignOrRevokeOrganizationAdviser(
+      orgId,
+      orgData.name || 'Organization',
+      {
+        action: 'assign',
+        adviserRole: 'co_adviser',
+        currentAdviser: orgData.coAdviser || null,
+        newAdviser: {
+          ...employeePayload,
+          email: cleanEmail,
+          departmentId: orgData.departmentId || '',
+        },
+        adminUser: actorName || orgData.adviser?.name || 'Club Adviser',
+        sendEmailNotice: true,
+      }
+    );
+
+    if (!updatedCoAdviser) {
+      return { success: false, error: 'Failed to save Substitute Adviser record.' };
+    }
+
+    // Preserve/auto-attach existing verified e-signature if the employee already has one in STI Sync
+    let resolvedSig = '';
+    try {
+      const { resolveUserSignature } = await import('../../signatories/services/signatory-resolver.service');
+      resolvedSig = await resolveUserSignature({
+        uid: updatedCoAdviser.authUid,
+        email: cleanEmail,
+        name: updatedCoAdviser.name,
+      });
+    } catch {}
+
+    const finalCoAdviser: OrgAdviserData = {
+      ...updatedCoAdviser,
+      ...(resolvedSig ? { signatureUrl: resolvedSig, signatureDataUrl: resolvedSig } as any : {}),
+    };
+
+    await updateDoc(orgRef, {
+      coAdviser: finalCoAdviser,
+      updatedAt: serverTimestamp(),
+    });
+
+    return {
+      success: true,
+      coAdviser: finalCoAdviser,
+      accountProvisioning: finalCoAdviser.accountProvisioning || 'created',
+      temporaryPassword:
+        finalCoAdviser.accountProvisioning === 'created'
+          ? (finalCoAdviser.temporaryPassword || finalCoAdviser.tempPass || employeePayload.temporaryPassword)
+          : undefined,
+    };
+  } catch (err: any) {
+    console.error('[assignOrganizationSubAdviser] Error:', err);
+    return { success: false, error: err?.message || 'Failed to assign Substitute Adviser.' };
+  }
+}
+
+/**
+ * Remove an organization's Substitute / Co-Adviser with the active-leave pending-docs guardrail.
+ */
+export async function removeOrganizationSubAdviser(
+  orgId: string,
+  actorName: string
+): Promise<{ success: boolean; error?: string; pendingDocuments?: AdviserPendingDocSummary[] }> {
+  if (!orgId) return { success: false, error: 'Organization ID is required.' };
+  try {
+    const orgRef = doc(db, COLLECTION, orgId);
+    const orgSnap = await getDocQuotaSafe(orgRef);
+    if (!orgSnap.exists()) return { success: false, error: 'Organization not found.' };
+    const orgData = orgSnap.data() as any;
+
+    if (isPrimaryAdviserUnavailable(orgData.adviserAvailability)) {
+      const pendingDocuments = await getOrgPendingAdviserReviewDocuments(orgId);
+      const check = validateRemoveCoAdviser({
+        primaryUnavailable: true,
+        pendingDocuments,
+      });
+      if (!check.allowed) {
+        return { success: false, error: check.reason || undefined, pendingDocuments };
+      }
+    }
+
+    await assignOrRevokeOrganizationAdviser(
+      orgId,
+      orgData.name || 'Organization',
+      {
+        action: 'unassign',
+        adviserRole: 'co_adviser',
+        currentAdviser: orgData.coAdviser || null,
+        adminUser: actorName || 'Club Adviser',
+      }
+    );
+
+    await updateDoc(orgRef, {
+      coAdviser: deleteField(),
+      updatedAt: serverTimestamp(),
+    });
+
+    return { success: true };
+  } catch (err: any) {
+    console.error('[removeOrganizationSubAdviser] Error:', err);
+    return { success: false, error: err?.message || 'Failed to remove Substitute Adviser.' };
+  }
+}
+
+/**
+ * Backward-compatible availability updater (delegates to setOrganizationAdviserPortalStatus).
  */
 export async function updateOrganizationAdviserAvailability(
   orgId: string,
   availability: Omit<OrgAdviserAvailability, 'updatedAt' | 'updatedBy'>,
   updatedBy: string
 ): Promise<OrgAdviserAvailability> {
-  if (!orgId) throw new Error('Organization ID is required.');
-  const orgRef = doc(db, COLLECTION, orgId);
-  const orgSnap = await getDoc(orgRef);
-  if (!orgSnap.exists()) throw new Error('Organization not found.');
-  const orgData = orgSnap.data() as any;
-
-  const cleanAvailability: OrgAdviserAvailability = {
-    primaryStatus: availability.primaryStatus === 'unavailable' ? 'unavailable' : 'available',
-    ...(availability.unavailableReason?.trim() ? { unavailableReason: availability.unavailableReason.trim() } : {}),
-    ...(availability.unavailableFrom?.trim() ? { unavailableFrom: availability.unavailableFrom.trim() } : {}),
-    ...(availability.unavailableUntil?.trim() ? { unavailableUntil: availability.unavailableUntil.trim() } : {}),
-    updatedBy: updatedBy || 'SAS Administration',
-    updatedAt: new Date().toISOString(),
-  };
-
-  await updateDoc(orgRef, {
-    adviserAvailability: cleanAvailability,
-    updatedAt: serverTimestamp(),
-  });
-
-  // Notify Co-Adviser when Primary becomes unavailable or returns
-  const coAdviser = orgData.coAdviser;
-  if (coAdviser?.email || coAdviser?.authUid) {
-    const isNowUnavailable = cleanAvailability.primaryStatus === 'unavailable';
-    const dateRangeNote =
-      cleanAvailability.unavailableFrom || cleanAvailability.unavailableUntil
-        ? ` (${cleanAvailability.unavailableFrom || 'Now'} to ${cleanAvailability.unavailableUntil || 'Further notice'})`
-        : '';
-    void createNotification({
-      recipientRole: 'officer',
-      recipientId: [coAdviser.authUid, String(coAdviser.email || '').trim().toLowerCase(), `adviser:${orgId}`]
-        .filter(Boolean)
-        .join('|'),
-      targetOrgId: orgId,
-      targetOrgName: orgData.name || 'Organization',
-      type: 'system_alert',
-      category: 'system',
-      title: isNowUnavailable
-        ? `Approval Authority Transferred — ${orgData.acronym || orgData.name}`
-        : `Primary Adviser Returned — ${orgData.acronym || orgData.name}`,
-      message: isNowUnavailable
-        ? `${orgData.adviser?.name || 'The Primary Club Adviser'} is marked Unavailable${dateRangeNote}. Full Club Adviser authority has been automatically transferred to you as Secondary Co-Adviser.`
-        : `${orgData.adviser?.name || 'The Primary Club Adviser'} is now Available again. You retain Co-Adviser portal access and Officer submission review rights.`,
-      resourceId: orgId,
-      resourceType: 'system',
-      actionRoute: '/officer/events',
-      senderName: updatedBy || 'SAS Administration',
-      senderRoleTitle: 'Club Adviser Governance',
-    }).catch(() => {});
+  const res = await setOrganizationAdviserPortalStatus(
+    orgId,
+    {
+      inactive: availability.primaryStatus === 'unavailable',
+      reason: availability.unavailableReason,
+    },
+    updatedBy
+  );
+  if (!res.success || !res.availability) {
+    throw new Error(res.error || 'Failed to update Adviser Portal status.');
   }
-
-  return cleanAvailability;
+  return res.availability;
 }
 
 /**

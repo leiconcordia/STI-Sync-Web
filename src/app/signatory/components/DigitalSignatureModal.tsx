@@ -27,7 +27,10 @@ interface DigitalSignatureModalProps {
   signatoryUid?: string;
   signatoryName?: string;
   signatoryEmail?: string;
+  signatoryRole?: string;
   currentSignatureUrl?: string;
+  actingAsSubstitute?: boolean;
+  delegatedForSignatoryId?: string;
   onSignatureSaved: (newUrl: string) => void;
 }
 
@@ -42,6 +45,8 @@ export default function DigitalSignatureModal({
   signatoryName,
   signatoryEmail,
   currentSignatureUrl,
+  actingAsSubstitute,
+  delegatedForSignatoryId,
   onSignatureSaved,
 }: DigitalSignatureModalProps) {
   const [isSaving, setIsSaving] = useState(false);
@@ -178,7 +183,13 @@ export default function DigitalSignatureModal({
     setIsSaving(true);
     try {
       const res = await saveSignatorySignatureInDatabase(
-        { id: effectiveId, email: effectiveEmail },
+        {
+          id: actingAsSubstitute ? undefined : effectiveId,
+          uid: effectiveId,
+          email: effectiveEmail,
+          actingAsSubstitute: Boolean(actingAsSubstitute),
+          delegatedForSignatoryId: delegatedForSignatoryId || undefined,
+        },
         signatureBlob,
         signatureDataUrl
       );

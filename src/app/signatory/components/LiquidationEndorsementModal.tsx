@@ -65,6 +65,7 @@ import { formatCurrency, formatVariance } from '../../utils/currency';
 import { formatLongDate, formatLongDateTime } from '../../utils/date';
 import ReceiptLightboxModal from '../../modules/finance/components/ReceiptLightboxModal';
 import { hasSignatorySignedStep, hasSignatorySignedDocument } from '../utils/campus-activity-report';
+import { matchesSignatoryOrSubstituteStep } from '../../modules/signatories/utils/signatory-substitute.utils';
 
 interface LiquidationEndorsementModalProps {
   isOpen?: boolean;
@@ -389,18 +390,7 @@ export default function LiquidationEndorsementModal({
   const userRole = signatorySession?.role || '';
   const currentStage = liquidation.currentStageIndex ?? 1;
 
-  const matchesCurrentSigner = (s: any) => {
-    if (!s) return false;
-    if (userUid && (s.signatoryUid === userUid || s.signatoryUid === signatorySession?.uid || s.signatoryUid === signatorySession?.id)) return true;
-    if (userEmail && s.signatoryEmail?.toLowerCase() === userEmail) return true;
-    if (userRole && s.role && s.role.toLowerCase() === userRole.toLowerCase()) return true;
-    if (s.roleTitle && signatorySession?.roleTitle) {
-      const sT = s.roleTitle.toLowerCase();
-      const uT = signatorySession.roleTitle.toLowerCase();
-      if (sT === uT || sT.includes(uT) || uT.includes(sT)) return true;
-    }
-    return false;
-  };
+  const matchesCurrentSigner = (s: any) => matchesSignatoryOrSubstituteStep(s, signatorySession);
 
   const isUnderReview = liquidation.status === 'under_review' || liquidation.status === 'pending';
   const isLiquidationApproved = liquidation.status === 'approved';
@@ -519,6 +509,13 @@ export default function LiquidationEndorsementModal({
           signatureUrl: activeSignatureUrl || undefined,
           canApproveLiquidation: signatorySession?.canApproveLiquidation,
           approvalDecision: decision,
+          actingAsSubstitute: Boolean(signatorySession?.actingAsSubstitute),
+          substituteUid: signatorySession?.substituteUid || signatorySession?.authUid || signatorySession?.uid,
+          delegatedForSignatoryId: signatorySession?.delegatedForSignatoryId,
+          delegatedForSignatoryUid: signatorySession?.delegatedForSignatoryUid,
+          delegatedForSignatoryName: signatorySession?.delegatedForSignatoryName,
+          delegatedForSignatoryEmail: signatorySession?.delegatedForSignatoryEmail,
+          delegatedForRoleTitle: signatorySession?.delegatedForRoleTitle,
         },
         '',
         decision

@@ -383,12 +383,23 @@ export default function SignatoryProposalsPage() {
         sbr={selectedSbr}
         viewerRole="signatory"
         actor={{
-          uid: session?.uid || session?.id || '',
+          uid: session?.actingAsSubstitute
+            ? (session?.substituteUid || session?.authUid || session?.uid || '')
+            : (session?.uid || session?.id || ''),
+          id: session?.id || session?.uid || '',
           name: session?.name || 'Institutional Signatory',
           email: session?.email || '',
           role: 'signatory',
           roleTitle: session?.roleTitle || session?.role || '',
           signatureUrl: session?.signatureUrl || session?.signatureDataUrl || undefined,
+          canApproveProposal: session?.canApproveProposal,
+          actingAsSubstitute: Boolean(session?.actingAsSubstitute),
+          substituteUid: session?.substituteUid || session?.authUid || session?.uid,
+          delegatedForSignatoryId: session?.delegatedForSignatoryId,
+          delegatedForSignatoryUid: session?.delegatedForSignatoryUid,
+          delegatedForSignatoryName: session?.delegatedForSignatoryName,
+          delegatedForSignatoryEmail: session?.delegatedForSignatoryEmail,
+          delegatedForRoleTitle: session?.delegatedForRoleTitle,
         }}
       />
     </div>

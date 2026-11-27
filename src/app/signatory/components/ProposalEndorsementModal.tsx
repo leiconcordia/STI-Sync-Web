@@ -47,6 +47,7 @@ import InlineRevisionBadge from '../../modules/workflow/components/InlineRevisio
 import StepReturnRevisionModal from '../../modules/workflow/components/StepReturnRevisionModal';
 import { diffActivityProposal } from '../../modules/workflow/utils/document-diff-engine';
 import { hasSignatorySignedStep, hasSignatorySignedDocument } from '../utils/campus-activity-report';
+import { matchesSignatoryOrSubstituteStep } from '../../modules/signatories/utils/signatory-substitute.utils';
 
 const AP_STEPS_FOR_REVISION = [
   { key: 'step_1', stepNumber: 1, label: 'Step 1: General Info & Proponents', description: 'Activity Title, Rationale, Theme, Proponents, and Organizing Body' },
@@ -159,10 +160,7 @@ export default function ProposalEndorsementModal({
     proposal.approvalChain?.find((s) => {
       const stageMatch = s.stageIndex ? s.stageIndex === currentStage : true;
       if (!stageMatch) return false;
-      if (userUid && s.signatoryUid === userUid) return true;
-      if (userEmail && s.signatoryEmail?.toLowerCase() === userEmail) return true;
-      if (userRole && s.role === userRole) return true;
-      return false;
+      return matchesSignatoryOrSubstituteStep(s, signatorySession);
     }) || proposal.approvalChain?.[proposal.currentStepIndex ?? 0];
 
   const activeSignatureUrl = useMemo(() => {
@@ -182,18 +180,7 @@ export default function ProposalEndorsementModal({
 
   const chain = proposal.approvalChain || [];
 
-  const matchesSignatoryIdentity = (s: any) => {
-    if (!s) return false;
-    if (userUid && (s.signatoryUid === userUid || s.signatoryUid === signatorySession?.id || s.signatoryUid === signatorySession?.uid)) return true;
-    if (userEmail && s.signatoryEmail?.toLowerCase() === userEmail) return true;
-    if (userRole && s.role && s.role.toLowerCase() === userRole.toLowerCase()) return true;
-    if (s.roleTitle && signatorySession?.roleTitle) {
-      const sT = s.roleTitle.toLowerCase();
-      const uT = signatorySession.roleTitle.toLowerCase();
-      if (sT === uT || sT.includes(uT) || uT.includes(sT)) return true;
-    }
-    return false;
-  };
+  const matchesSignatoryIdentity = (s: any) => matchesSignatoryOrSubstituteStep(s, signatorySession);
 
   const isReturnedDoc =
     proposal.status === 'returned' ||
@@ -293,6 +280,13 @@ export default function ProposalEndorsementModal({
           signatureUrl: activeSignatureUrl || undefined,
           canApproveProposal: signatorySession?.canApproveProposal,
           approvalDecision: decision,
+          actingAsSubstitute: Boolean(signatorySession?.actingAsSubstitute),
+          substituteUid: signatorySession?.substituteUid || signatorySession?.authUid || signatorySession?.uid,
+          delegatedForSignatoryId: signatorySession?.delegatedForSignatoryId,
+          delegatedForSignatoryUid: signatorySession?.delegatedForSignatoryUid,
+          delegatedForSignatoryName: signatorySession?.delegatedForSignatoryName,
+          delegatedForSignatoryEmail: signatorySession?.delegatedForSignatoryEmail,
+          delegatedForRoleTitle: signatorySession?.delegatedForRoleTitle,
         },
         '',
         decision

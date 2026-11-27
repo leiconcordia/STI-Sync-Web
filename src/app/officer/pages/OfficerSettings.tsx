@@ -19,6 +19,9 @@ import {
   Shield,
   AlertTriangle,
   Lock,
+  UserCog,
+  Power,
+  CalendarClock,
 } from 'lucide-react';
 import { collection, query, where, getDocs, updateDoc, doc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../../services/firebase';
@@ -28,10 +31,13 @@ import { useRoles } from '../../modules/roles/hooks/useRoles';
 import { updateStudent } from '../../modules/students/services/student.service';
 import { uploadToCloudinary } from '../../../services/cloudinary';
 import { changeOfficerOrAdviserPassword } from '../../auth/services/password.service';
+import { ManageAdviserSubstituteModal } from '../../modules/organizations/components/ManageAdviserSubstituteModal';
+import { getOrgPendingAdviserReviewDocuments } from '../../modules/organizations/services/organization.service';
+import type { AdviserPendingDocSummary } from '../../modules/organizations/utils/adviser-authority.utils';
 import OrganizationProfile from './OrganizationProfile';
 import { toast } from 'sonner';
 
-type SettingsSection = 'account' | 'signature' | 'organization' | 'security';
+type SettingsSection = 'account' | 'signature' | 'availability' | 'organization' | 'security';
 
 function PasswordStrength({ password }: { password: string }) {
   const checks = [
@@ -70,6 +76,7 @@ function PasswordStrength({ password }: { password: string }) {
 const NAV_ITEMS: { key: SettingsSection; label: string }[] = [
   { key: 'account', label: 'Account Profile' },
   { key: 'signature', label: 'Official E-Signature' },
+  { key: 'availability', label: 'Portal Status & Sub' },
   { key: 'organization', label: 'Organization Profile' },
   { key: 'security', label: 'Security & Password' },
 ];
@@ -82,20 +89,32 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
   const [searchParams, setSearchParams] = useSearchParams();
   const tabQuery = searchParams.get('tab') as SettingsSection | null;
   const [activeSection, setActiveSection] = useState<SettingsSection>(
-    tabQuery && ['account', 'signature', 'organization', 'security'].includes(tabQuery)
+    tabQuery && ['account', 'signature', 'availability', 'organization', 'security'].includes(tabQuery)
       ? tabQuery
       : defaultTab
   );
 
   // Sync tabQuery with state if searchParams change
   useEffect(() => {
-    if (tabQuery && ['account', 'signature', 'organization', 'security'].includes(tabQuery)) {
+    if (tabQuery && ['account', 'signature', 'availability', 'organization', 'security'].includes(tabQuery)) {
       setActiveSection(tabQuery);
     }
   }, [tabQuery]);
 
   // Real Officer Data Hooks
-  const { profile, activeOrgName, loading: profileLoading, markPasswordChanged } = useOfficerProfile();
+  const {
+    profile,
+    activeOrgName,
+    activeOrgAdviser,
+    activeOrgCoAdviser,
+    activeOrgAdviserAvailability,
+    adviserAuthority,
+    loading: profileLoading,
+    markPasswordChanged,
+  } = useOfficerProfile();
+  const [adviserSubModalTab, setAdviserSubModalTab] = useState<'substitute' | 'leave' | null>(null);
+  const [pendingAdviserDocs, setPendingAdviserDocs] = useState<AdviserPendingDocSummary[]>([]);
+  const [loadingPendingAdviserDocs, setLoadingPendingAdviserDocs] = useState(false);
   const { data: students, loading: studentsLoading } = useStudents();
   const { data: roles } = useRoles();
 
@@ -313,8 +332,9 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
 
       if (profile?.activeOrganizationId) {
         const orgRef = doc(db, 'organizations', profile.activeOrganizationId);
+        const sigField = adviserAuthority.isCoAdviser ? 'coAdviser.signatureUrl' : 'adviser.signatureUrl';
         await updateDoc(orgRef, {
-          'adviser.signatureUrl': finalUrl,
+          [sigField]: finalUrl,
           updatedAt: serverTimestamp(),
         });
       }
@@ -361,8 +381,9 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
       }
       if (profile?.activeOrganizationId) {
         const orgRef = doc(db, 'organizations', profile.activeOrganizationId);
+        const sigField = adviserAuthority.isCoAdviser ? 'coAdviser.signatureUrl' : 'adviser.signatureUrl';
         await updateDoc(orgRef, {
-          'adviser.signatureUrl': null,
+          [sigField]: null,
           updatedAt: serverTimestamp(),
         });
       }
@@ -381,6 +402,24 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
       setIsSavingSignature(false);
     }
   };
+
+  // Load pending Officer documents awaiting Adviser review when Primary Adviser views Availability tab
+  useEffect(() => {
+    if (!isAdviser || adviserAuthority.isCoAdviser || !profile?.activeOrganizationId) return;
+    let cancelled = false;
+    setLoadingPendingAdviserDocs(true);
+    getOrgPendingAdviserReviewDocuments(profile.activeOrganizationId)
+      .then((docs) => {
+        if (!cancelled) setPendingAdviserDocs(docs);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoadingPendingAdviserDocs(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdviser, adviserAuthority.isCoAdviser, profile?.activeOrganizationId, adviserSubModalTab, activeSection]);
 
   // Populate form with real data
   useEffect(() => {
@@ -554,7 +593,7 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
         <div className="col-span-3">
           <div className="bg-white border border-[#E0E0E0] rounded-xl p-3 shadow-sm">
             <nav className="space-y-0.5">
-              {NAV_ITEMS.filter(({ key }) => key !== 'signature' || isAdviser).map(({ key, label }) => (
+              {NAV_ITEMS.filter(({ key }) => (key !== 'signature' && key !== 'availability') || isAdviser).map(({ key, label }) => (
                 <button
                   key={key}
                   onClick={() => handleTabChange(key)}
@@ -565,6 +604,7 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
                 >
                   <span className="flex items-center gap-2">
                     {key === 'signature' && <PenTool className="w-4 h-4 text-[#0E4EBD]" />}
+                    {key === 'availability' && <UserCog className="w-4 h-4 text-[#0E4EBD]" />}
                     {label}
                   </span>
                   {key === 'signature' && (
@@ -572,6 +612,12 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
                       className={`w-2 h-2 rounded-full ${signatureUrl ? 'bg-emerald-500' : 'bg-amber-500'
                         }`}
                       title={signatureUrl ? 'Signature registered' : 'No signature registered'}
+                    />
+                  )}
+                  {key === 'availability' && (
+                    <span
+                      className={`w-2 h-2 rounded-full ${adviserAuthority.isPrimaryUnavailable ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                      title={adviserAuthority.isPrimaryUnavailable ? 'Primary Adviser Inactive (Sub Active)' : 'Primary Adviser Active'}
                     />
                   )}
                 </button>
@@ -772,6 +818,168 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
                       </button>
                     </div>
                   </>
+                )}
+              </div>
+            )}
+
+            {/* ── Portal Status & Substitute Transfer (Club Adviser) ── */}
+            {activeSection === 'availability' && isAdviser && (
+              <div className="space-y-6">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 pb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-700 flex items-center justify-center shrink-0">
+                      <UserCog className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h2 className="text-[#001A4D] text-[18px] font-bold">
+                        Adviser Portal Status &amp; Substitute Transfer
+                      </h2>
+                      <p className="text-xs text-gray-500">
+                        Transfer Officer approval authority to your Substitute / Co-Adviser whenever you set your Adviser Portal to Inactive.
+                      </p>
+                    </div>
+                  </div>
+                  <span
+                    className={`px-3 py-1 rounded-full text-xs font-bold self-start sm:self-auto ${
+                      adviserAuthority.isPrimaryUnavailable
+                        ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                        : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                    }`}
+                  >
+                    {adviserAuthority.isPrimaryUnavailable ? 'Primary Inactive • Sub Active' : 'Primary Active'}
+                  </span>
+                </div>
+
+                {adviserAuthority.isCoAdviser ? (
+                  <div
+                    className={`p-5 rounded-2xl border-2 space-y-3 ${
+                      adviserAuthority.canReviewOfficerSubmissions
+                        ? 'bg-indigo-50/80 border-indigo-300'
+                        : 'bg-slate-50 border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      {adviserAuthority.canReviewOfficerSubmissions ? (
+                        <ShieldCheck className="w-5 h-5 text-indigo-700" />
+                      ) : (
+                        <Lock className="w-5 h-5 text-slate-500" />
+                      )}
+                      <h3 className="text-sm font-black text-[#001A4D]">
+                        {adviserAuthority.canReviewOfficerSubmissions
+                          ? 'Acting Club Adviser Authority Active'
+                          : 'Standby Mode — Primary Adviser Currently Active'}
+                      </h3>
+                    </div>
+                    <p className="text-xs text-slate-700 leading-relaxed">
+                      {adviserAuthority.statusBannerText}
+                    </p>
+                    {activeOrgAdviser && (
+                      <div className="bg-white rounded-xl border border-slate-200 p-3.5 text-xs">
+                        <span className="text-[10px] font-bold uppercase text-slate-400 block">Primary Club Adviser</span>
+                        <span className="font-bold text-[#001A4D]">{activeOrgAdviser.name}</span>
+                        <span className="text-slate-500 ml-2">({activeOrgAdviser.email})</span>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    {/* Substitute / Co-Adviser Card */}
+                    <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 flex flex-col justify-between gap-4">
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
+                            Assigned Substitute / Co-Adviser
+                          </span>
+                          {activeOrgCoAdviser ? (
+                            <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-black">
+                              Assigned
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-black">
+                              None Assigned
+                            </span>
+                          )}
+                        </div>
+                        {activeOrgCoAdviser ? (
+                          <div className="bg-white rounded-xl border border-slate-200 p-3 space-y-1">
+                            <p className="text-sm font-black text-[#001A4D]">{activeOrgCoAdviser.name}</p>
+                            <p className="text-xs text-slate-500">{activeOrgCoAdviser.email}</p>
+                            <p className="text-[11px] font-semibold pt-1 text-indigo-700">
+                              {adviserAuthority.isPrimaryUnavailable
+                                ? 'Currently holds Acting Adviser approval authority.'
+                                : 'In Standby Mode — cannot approve while your portal is active.'}
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-600 leading-relaxed">
+                            No Substitute / Co-Adviser is assigned yet. Assign one before setting your portal Inactive if you have pending Officer submissions.
+                          </p>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setAdviserSubModalTab('substitute')}
+                        className="w-full py-2.5 px-4 rounded-xl bg-[#001A4D] hover:bg-[#0E4EBD] text-white text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                      >
+                        <UserCog className="w-4 h-4 text-[#FFD41C]" />
+                        <span>{activeOrgCoAdviser ? 'Change or Remove Substitute' : 'Assign Substitute Adviser'}</span>
+                      </button>
+                    </div>
+
+                    {/* Portal Active / Inactive Card */}
+                    <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 flex flex-col justify-between gap-4">
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
+                            Adviser Portal Availability
+                          </span>
+                          <span className="text-[11px] font-bold text-slate-600">
+                            {loadingPendingAdviserDocs
+                              ? 'Checking...'
+                              : `${pendingAdviserDocs.length} Pending Review${pendingAdviserDocs.length === 1 ? '' : 's'}`}
+                          </span>
+                        </div>
+                        {adviserAuthority.isPrimaryUnavailable ? (
+                          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-950 space-y-1">
+                            <p className="font-bold flex items-center gap-1.5">
+                              <CalendarClock className="w-4 h-4 text-amber-700" />
+                              Portal Inactive ({activeOrgAdviserAvailability?.unavailableReason || 'On Leave'})
+                            </p>
+                            <p className="text-amber-800">
+                              {activeOrgCoAdviser
+                                ? `Approval authority is transferred to ${activeOrgCoAdviser.name}.`
+                                : 'Portal is currently paused. Reactivate anytime.'}
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-600 leading-relaxed">
+                            Setting your Adviser Portal to <strong>Inactive</strong> immediately transfers approval authority for Officer submissions (AP, SBR, FL, PAR) to your assigned Substitute Adviser.
+                            {pendingAdviserDocs.length > 0 && !activeOrgCoAdviser && (
+                              <span className="block mt-1.5 font-bold text-rose-700">
+                                Blocked: {pendingAdviserDocs.length} pending Officer document{pendingAdviserDocs.length === 1 ? '' : 's'} require a Substitute Adviser first.
+                              </span>
+                            )}
+                          </p>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setAdviserSubModalTab('leave')}
+                        className={`w-full py-2.5 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer ${
+                          adviserAuthority.isPrimaryUnavailable
+                            ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                            : 'bg-amber-600 hover:bg-amber-700 text-white'
+                        }`}
+                      >
+                        <Power className="w-4 h-4" />
+                        <span>
+                          {adviserAuthority.isPrimaryUnavailable
+                            ? 'Reactivate My Adviser Portal'
+                            : 'Set Portal Inactive (Transfer to Sub)'}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
             )}
@@ -1043,6 +1251,23 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
           </div>
         </div>
       </div>
+
+      {/* Adviser Portal Status & Substitute Transfer Modal */}
+      {adviserSubModalTab && profile?.activeOrganizationId && !adviserAuthority.isCoAdviser && (
+        <ManageAdviserSubstituteModal
+          isOpen={Boolean(adviserSubModalTab)}
+          onClose={() => setAdviserSubModalTab(null)}
+          initialTab={adviserSubModalTab}
+          organization={{
+            id: profile.activeOrganizationId,
+            name: activeOrgName || 'Organization',
+            adviser: activeOrgAdviser,
+            coAdviser: activeOrgCoAdviser,
+            adviserAvailability: activeOrgAdviserAvailability,
+          }}
+          actorName={profile.studentName || profile.email || 'Club Adviser'}
+        />
+      )}
     </div>
   );
 }

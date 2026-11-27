@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocFromCache,
   getDocs,
   setDoc,
   updateDoc,
@@ -20,6 +21,10 @@ import { db, sanitizeFirestorePayload } from '../../../../services/firebase';
 import { archiveDocumentRevision } from '../../workflow/services/revision-history.service';
 import { SIGNATORIES_COLLECTION } from '../../signatories/services/signatory.service';
 import { resolveSignatoryLabel, canSignatoryApproveDocument } from '../../signatories/utils/signatory-label.utils';
+import {
+  matchesSignatoryOrSubstituteStep,
+  resolveSignerAttribution,
+} from '../../signatories/utils/signatory-substitute.utils';
 import { EVENTS_COLLECTION } from '../../events/services/event.service';
 import {
   type InstitutionalSignatory,
@@ -34,7 +39,10 @@ import {
 } from '../../workflow/services/approval-workflow.service';
 import { createNotification } from '../../notifications';
 import { formatStageTitle, normalizeApprovalStages } from '../../workflow/utils/stage-normalization.utils';
-import { resolveAdviserActorAuditContext } from '../../organizations/services/organization.service';
+import {
+  assertAdviserCanApproveForOrg,
+  resolveAdviserActorAuditContext,
+} from '../../organizations/services/organization.service';
 import {
   resolveSignatoryDecisionCapabilities,
   applySingleApprovalDemotion,
@@ -989,6 +997,13 @@ export async function endorsePARStep(
     actionType?: 'check' | 'endorse' | 'approve' | 'note';
     canApprovePar?: boolean;
     approvalDecision?: 'approve' | 'forward';
+    actingAsSubstitute?: boolean;
+    substituteUid?: string;
+    delegatedForSignatoryId?: string;
+    delegatedForSignatoryUid?: string;
+    delegatedForSignatoryName?: string;
+    delegatedForSignatoryEmail?: string;
+    delegatedForRoleTitle?: string;
   },
   remarks = '',
   approvalDecision?: 'approve' | 'forward'
@@ -1000,7 +1015,21 @@ export async function endorsePARStep(
   approvedBySignatoryName?: string;
 }> {
   const parRef = doc(db, PAR_COLLECTION, parId);
-  const preSnap = await getDoc(parRef);
+  const isQuotaErr = (err: any) => {
+    const code = String(err?.code || '').toLowerCase();
+    const msg = String(err?.message || '').toLowerCase();
+    return code === 'resource-exhausted' || msg.includes('quota exceeded') || msg.includes('resource-exhausted');
+  };
+  const readDocSafe = async (ref: ReturnType<typeof doc>) => {
+    try {
+      return await getDoc(ref);
+    } catch (err: any) {
+      if (isQuotaErr(err)) return await getDocFromCache(ref);
+      throw err;
+    }
+  };
+
+  const preSnap = await readDocSafe(parRef);
   if (!preSnap.exists()) throw new Error('Post-Activity Report not found.');
   const preData = preSnap.data() as PostActivityReportDocument;
 
@@ -1009,38 +1038,34 @@ export async function endorsePARStep(
   if (preData.status !== 'approved' && preData.eventId) {
     let parentEventData: any = null;
     try {
-      const evSnap = await getDoc(doc(db, EVENTS_COLLECTION, preData.eventId));
+      const evSnap = await readDocSafe(doc(db, EVENTS_COLLECTION, preData.eventId));
       if (evSnap.exists()) parentEventData = evSnap.data();
     } catch {}
     if (parentEventData) {
-      const activeLiqDoc = await fetchActiveEventLiquidation(preData.eventId, preData.liquidationId);
-      const gate = evaluatePARLiquidationGate({
-        event: parentEventData,
-        liquidation: activeLiqDoc,
-        isExempt: isEventLiquidationExempt(parentEventData),
-      });
-      if (!gate.allowedToApprove) {
-        parLiquidationGateError = gate.approveReason || 'Liquidation must be approved before approving this Post-Activity Report.';
+      try {
+        const activeLiqDoc = await fetchActiveEventLiquidation(preData.eventId, preData.liquidationId);
+        const gate = evaluatePARLiquidationGate({
+          event: parentEventData,
+          liquidation: activeLiqDoc,
+          isExempt: isEventLiquidationExempt(parentEventData),
+        });
+        if (!gate.allowedToApprove) {
+          parLiquidationGateError = gate.approveReason || 'Liquidation must be approved before approving this Post-Activity Report.';
+        }
+      } catch (gateErr) {
+        console.warn('[endorsePARStep] Non-blocking liquidation gate pre-check note:', gateErr);
       }
     }
   }
 
-  const signerUid = signatory.id || signatory.uid || '';
-  const signerEmail = (signatory.email || '').toLowerCase();
+  const signerAttr = resolveSignerAttribution(signatory);
+  const signerUid = signerAttr.signerUid || signatory.id || signatory.uid || '';
+  const signerEmail = signerAttr.signerEmail || (signatory.email || '').toLowerCase();
   const decision = approvalDecision || signatory.approvalDecision;
 
-  const matchesSignatory = (s: any) => {
-    if (signerUid && s.signatoryUid === signerUid) return true;
-    if (signerEmail && s.signatoryEmail?.toLowerCase() === signerEmail) return true;
-    if (signatory.role && s.role === signatory.role) return true;
-    return false;
-  };
+  const matchesSignatory = (s: any) => matchesSignatoryOrSubstituteStep(s, signatory);
 
-  const txResult = await runTransaction(db, async (tx) => {
-    const snap = await tx.get(parRef);
-    if (!snap.exists()) throw new Error('Post-Activity Report not found.');
-
-    const data = snap.data() as PostActivityReportDocument;
+  const computeParEndorse = (data: PostActivityReportDocument) => {
     const chain = [...(data.approvalChain || [])];
     if (chain.length === 0) throw new Error('No approval steps found on this report.');
 
@@ -1102,12 +1127,23 @@ export async function endorsePARStep(
     let updatedStep: any = {
       ...chain[targetStepIdx],
       status: newStatus,
-      signatoryUid: signerUid || chain[targetStepIdx].signatoryUid || '',
+      signatoryUid: signerAttr.actedAsSubstitute
+        ? (signerAttr.originalSignatoryUid || chain[targetStepIdx].signatoryUid || signerUid)
+        : (signerUid || chain[targetStepIdx].signatoryUid || ''),
       signedByUid: signerUid || chain[targetStepIdx].signatoryUid || '',
-      signatoryName: signatory.name || chain[targetStepIdx].signatoryName || '',
-      signedByName: signatory.name || chain[targetStepIdx].signatoryName || '',
-      signatoryEmail: signatory.email || chain[targetStepIdx].signatoryEmail || '',
+      signatoryName: signerAttr.signerName || chain[targetStepIdx].signatoryName || '',
+      signedByName: signerAttr.signerName || chain[targetStepIdx].signatoryName || '',
+      signatoryEmail: signerEmail || chain[targetStepIdx].signatoryEmail || '',
       signedByEmail: signerEmail || chain[targetStepIdx].signatoryEmail || '',
+      ...(signerAttr.actedAsSubstitute
+        ? {
+            roleTitle: signerAttr.signerRoleTitle,
+            actedAsSubstitute: true,
+            originalSignatoryUid: signerAttr.originalSignatoryUid || chain[targetStepIdx].signatoryUid || '',
+            originalSignatoryName: signerAttr.originalSignatoryName || chain[targetStepIdx].signatoryName || '',
+            originalSignatoryEmail: signerAttr.originalSignatoryEmail || chain[targetStepIdx].signatoryEmail || '',
+          }
+        : {}),
       signatureUrl: signatory.signatureUrl || chain[targetStepIdx].signatureUrl,
       signedAt: new Date().toISOString(),
       remarks: remarks || chain[targetStepIdx].remarks,
@@ -1203,8 +1239,6 @@ export async function endorsePARStep(
         : {}),
     });
 
-    tx.update(parRef, sanitizeFirestorePayload(updates));
-
     return {
       data,
       updates,
@@ -1214,7 +1248,27 @@ export async function endorsePARStep(
       wasCoercedByPriorApproval,
       approvedBySignatoryName: capabilities.approvedBySignatoryName,
     };
-  });
+  };
+
+  let txResult: ReturnType<typeof computeParEndorse>;
+  try {
+    txResult = await runTransaction(db, async (tx) => {
+      const snap = await tx.get(parRef);
+      if (!snap.exists()) throw new Error('Post-Activity Report not found.');
+      const computed = computeParEndorse(snap.data() as PostActivityReportDocument);
+      tx.update(parRef, sanitizeFirestorePayload(computed.updates));
+      return computed;
+    });
+  } catch (txErr: any) {
+    if (!isQuotaErr(txErr)) {
+      throw txErr;
+    }
+    console.warn('[endorsePARStep] Transaction hit Firestore quota limit; falling back to cache-backed updateDoc.');
+    const snap = await readDocSafe(parRef);
+    if (!snap.exists()) throw new Error('Post-Activity Report not found.');
+    txResult = computeParEndorse(snap.data() as PostActivityReportDocument);
+    await updateDoc(parRef, sanitizeFirestorePayload(txResult.updates));
+  }
 
   const {
     data,
@@ -1590,6 +1644,7 @@ export async function approveAndForwardPARByAdviser(
   const snap = await getDoc(parRef);
   if (!snap.exists()) throw new Error('Post-Activity Report not found.');
   const data = snap.data() as any;
+  await assertAdviserCanApproveForOrg(data.organizationId || data.hostingOrgId, adviser);
 
   const resolvedSource = String(data.fundingSource || 'organization_funds').toLowerCase();
   const isOrgDirectSas =
@@ -1723,6 +1778,7 @@ export async function returnPARByAdviser(
   const snap = await getDoc(parRef);
   if (!snap.exists()) throw new Error('Post-Activity Report not found.');
   const data = snap.data() as any;
+  await assertAdviserCanApproveForOrg(data.organizationId || data.hostingOrgId, adviser);
 
   const nowIso = new Date().toISOString();
   const cleanSnap = sanitizeCleanDocumentSnapshot(data);
@@ -1829,6 +1885,7 @@ export async function rejectPARByAdviser(
   const snap = await getDoc(parRef);
   if (!snap.exists()) throw new Error('Post-Activity Report not found.');
   const data = snap.data() as any;
+  await assertAdviserCanApproveForOrg(data.organizationId || data.hostingOrgId, adviser);
 
   const nowIso = new Date().toISOString();
   const adviserReview = {

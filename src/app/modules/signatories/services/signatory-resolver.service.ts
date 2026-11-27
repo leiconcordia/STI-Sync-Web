@@ -225,6 +225,31 @@ export async function resolveUserSignature(identifier: UserSignatureIdentifier):
     }
   }
 
+  // 4b. Check institutional_signatories substitute slots by substituteEmail / substituteAuthUid
+  if (email || uid) {
+    try {
+      const subQueries: Promise<any>[] = [];
+      if (email) {
+        subQueries.push(getDocs(query(collection(db, SIGNATORIES_COLLECTION), where('substituteEmail', '==', email))));
+      }
+      if (uid) {
+        subQueries.push(getDocs(query(collection(db, SIGNATORIES_COLLECTION), where('substituteAuthUid', '==', uid))));
+      }
+      const subSnaps = await Promise.all(subQueries);
+      for (const snap of subSnaps) {
+        for (const d of snap.docs) {
+          const sub = d.data()?.substitute;
+          const sig = cleanSigValue(sub?.signatureUrl) || cleanSigValue(sub?.signatureDataUrl);
+          if (sig) {
+            return sig;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[SignatureResolver] institutional_signatories substitute lookup warning:', e);
+    }
+  }
+
   // 5. Check organization_advisers by doc ID, authUid, or Email
   if (uid) {
     try {
@@ -335,8 +360,19 @@ export async function syncUserSignatureAcrossProfiles(params: {
   roleTitle?: string | null;
   signatureUrl: string;
   role?: string | null;
+  actingAsSubstitute?: boolean;
+  delegatedForSignatoryId?: string | null;
 }): Promise<void> {
-  const { uid, email, name, roleTitle, signatureUrl, role } = params;
+  const {
+    uid,
+    email,
+    name,
+    roleTitle,
+    signatureUrl,
+    role,
+    actingAsSubstitute,
+    delegatedForSignatoryId,
+  } = params;
   if (!signatureUrl) return;
 
   const effectiveEmail = (email || '').toLowerCase().trim();
@@ -344,10 +380,11 @@ export async function syncUserSignatureAcrossProfiles(params: {
   const effectiveName = name || 'Signatory';
   const effectiveRoleTitle = roleTitle || 'Institutional Signatory';
   const isSasOrAdmin =
-    role === 'admin' ||
-    role === 'sas_admin' ||
-    effectiveEmail.includes('sas') ||
-    effectiveEmail.includes('sao');
+    !actingAsSubstitute &&
+    (role === 'admin' ||
+      role === 'sas_admin' ||
+      effectiveEmail.includes('sas') ||
+      effectiveEmail.includes('sao'));
 
   // 1. Update sas_admins if UID is present and user is admin
   if (effectiveUid && isSasOrAdmin) {
@@ -378,15 +415,59 @@ export async function syncUserSignatureAcrossProfiles(params: {
     }
   }
 
-  // 3. Save to institutional_signatories and audit records
+  // 3. Save to institutional_signatories (isolated when actingAsSubstitute) and audit records
   try {
     await saveSignatorySignatureInDatabase(
-      { id: effectiveUid, email: effectiveEmail },
+      {
+        id: actingAsSubstitute ? undefined : effectiveUid,
+        uid: effectiveUid,
+        email: effectiveEmail,
+        actingAsSubstitute: Boolean(actingAsSubstitute),
+        delegatedForSignatoryId: delegatedForSignatoryId || undefined,
+      },
       null,
       signatureUrl
     );
   } catch (e) {
     console.warn('[SignatureResolver] Sync to institutional_signatories notice:', e);
+  }
+
+  // 3b. Also keep any substitute slots belonging to this user in sync (never touches Primary's signature)
+  if (effectiveEmail || effectiveUid) {
+    try {
+      const subQueries: Promise<any>[] = [];
+      if (effectiveEmail) {
+        subQueries.push(getDocs(query(collection(db, SIGNATORIES_COLLECTION), where('substituteEmail', '==', effectiveEmail))));
+      }
+      if (effectiveUid) {
+        subQueries.push(getDocs(query(collection(db, SIGNATORIES_COLLECTION), where('substituteAuthUid', '==', effectiveUid))));
+      }
+      const subSnaps = await Promise.all(subQueries);
+      const syncedSubDocIds = new Set<string>();
+      for (const snap of subSnaps) {
+        for (const d of snap.docs) {
+          if (syncedSubDocIds.has(d.id)) continue;
+          syncedSubDocIds.add(d.id);
+          const existingSub = d.data()?.substitute;
+          if (!existingSub) continue;
+          await setDoc(
+            doc(db, SIGNATORIES_COLLECTION, d.id),
+            {
+              substitute: {
+                ...existingSub,
+                signatureUrl,
+                signatureDataUrl: signatureUrl,
+                signatureUpdatedAt: new Date().toISOString(),
+              },
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
+      }
+    } catch (e) {
+      console.warn('[SignatureResolver] Sync to substitute signatory slots notice:', e);
+    }
   }
 
   // 4. Update all matching organization_advisers docs (Primary Adviser & Secondary Co-Adviser)

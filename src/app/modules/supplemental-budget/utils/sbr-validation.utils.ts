@@ -652,24 +652,51 @@ export function normalizeSbrApprovalChain(
  */
 export function matchesSbrSignatoryStep(
   step: any,
-  actor: { uid?: string; id?: string; email?: string; role?: string; roleTitle?: string }
+  actor: {
+    uid?: string;
+    id?: string;
+    email?: string;
+    role?: string;
+    roleTitle?: string;
+    actingAsSubstitute?: boolean;
+    delegatedForSignatoryId?: string;
+    delegatedForSignatoryUid?: string;
+    delegatedForSignatoryEmail?: string;
+    delegatedForRoleTitle?: string;
+  }
 ): boolean {
   if (!step || !actor) return false;
-  const actorUids = [actor.uid, actor.id].map((v) => String(v || '').trim()).filter(Boolean);
+  const actorUids = [
+    actor.uid,
+    actor.id,
+    ...(actor.actingAsSubstitute ? [actor.delegatedForSignatoryId, actor.delegatedForSignatoryUid] : []),
+  ]
+    .map((v) => String(v || '').trim())
+    .filter(Boolean);
   const stepUid = String(step.signatoryUid || step.signedByUid || '').trim();
   if (stepUid && actorUids.includes(stepUid)) return true;
 
-  const actorEmail = String(actor.email || '').trim().toLowerCase();
+  const actorEmails = [
+    actor.email,
+    ...(actor.actingAsSubstitute ? [actor.delegatedForSignatoryEmail] : []),
+  ]
+    .map((v) => String(v || '').trim().toLowerCase())
+    .filter(Boolean);
   const stepEmail = String(step.signatoryEmail || step.signedByEmail || '').trim().toLowerCase();
-  if (actorEmail && stepEmail && actorEmail === stepEmail) return true;
+  if (stepEmail && actorEmails.includes(stepEmail)) return true;
 
   if (!stepUid && !stepEmail) {
     const aRole = String(actor.role || '').trim().toLowerCase();
     const sRole = String(step.role || '').trim().toLowerCase();
     if (aRole && sRole && aRole === sRole) return true;
-    const aTitle = String(actor.roleTitle || '').trim().toLowerCase();
+    const candidateTitles = [
+      actor.roleTitle,
+      ...(actor.actingAsSubstitute ? [actor.delegatedForRoleTitle] : []),
+    ]
+      .map((v) => String(v || '').trim().toLowerCase())
+      .filter(Boolean);
     const sTitle = String(step.roleTitle || '').trim().toLowerCase();
-    if (aTitle && sTitle && (aTitle === sTitle || sTitle.includes(aTitle) || aTitle.includes(sTitle))) {
+    if (sTitle && candidateTitles.some((aTitle) => aTitle === sTitle || sTitle.includes(aTitle) || aTitle.includes(sTitle))) {
       return true;
     }
   }
@@ -683,7 +710,18 @@ export function matchesSbrSignatoryStep(
  */
 export function isSignatoryTurnForSbr(
   sbr: Pick<SupplementalBudgetRequest, 'status' | 'approvalChain' | 'currentStageIndex' | 'currentStepIndex'> | null | undefined,
-  actor: { uid?: string; id?: string; email?: string; role?: string; roleTitle?: string }
+  actor: {
+    uid?: string;
+    id?: string;
+    email?: string;
+    role?: string;
+    roleTitle?: string;
+    actingAsSubstitute?: boolean;
+    delegatedForSignatoryId?: string;
+    delegatedForSignatoryUid?: string;
+    delegatedForSignatoryEmail?: string;
+    delegatedForRoleTitle?: string;
+  }
 ): boolean {
   if (!sbr) return false;
   if (sbr.status !== 'pending_signatories' && sbr.status !== 'approved') return false;
@@ -722,16 +760,72 @@ export interface LiquidationBaselineCategoryItem {
 }
 
 /**
- * Merges original AP baseline items with approved Supplemental Budget line items
+ * Returns true ONLY when an approved SBR's funds have actually been released/deducted
+ * and are eligible to reflect in Financial Liquidation (FL):
+ *  - `organization_funds`: ONLY after Officer/Adviser clicks Acknowledge & Deduct in Finance Center (`ledgerDeducted === true`).
+ *  - `school_budget` / `retained_sao_fund`: ONLY after uploading the dedicated Supplemental Disbursement Voucher (`disbursementVoucher` attached + `ledgerDeducted === true`).
+ */
+export function isSbrDisbursedForLiquidation(
+  sbr: Partial<SupplementalBudgetRequest> | null | undefined
+): boolean {
+  if (!sbr || sbr.isDeleted || sbr.status !== 'approved') return false;
+  if (sbr.fundingSource === 'organization_funds') {
+    return Boolean(sbr.ledgerDeducted);
+  }
+  const hasVoucherProof = Boolean(
+    sbr.disbursementVoucher &&
+      (sbr.disbursementVoucher.attachmentUrl ||
+        sbr.disbursementVoucher.chequeNumber ||
+        sbr.disbursementVoucher.voucherNumber)
+  );
+  return Boolean(sbr.ledgerDeducted && hasVoucherProof);
+}
+
+const PLACEHOLDER_EXPENSE_TITLES = new Set([
+  'expense item',
+  'proposed item',
+  'proposed item 1',
+  'budget item 1',
+  'general',
+  'other / general expenses',
+]);
+
+/**
+ * Filters out empty / zero-budget placeholder base rows (e.g., Non-Monetary APs that saved
+ * a dummy "Expense Item" row with ₱0) so Financial Liquidation never renders duplicate General tabs.
+ */
+export function filterMeaningfulBaseLiquidationItems(
+  baseItems: LiquidationBaselineCategoryItem[] = [],
+  isZeroBudgetBase: boolean = false
+): LiquidationBaselineCategoryItem[] {
+  if (isZeroBudgetBase) return [];
+  return (baseItems || []).filter((item) => {
+    if (!item) return false;
+    const amt = Number(item.baselineAmount) || 0;
+    const normTitle = String(item.title || '').trim().toLowerCase();
+    if (amt <= 0 && (!normTitle || PLACEHOLDER_EXPENSE_TITLES.has(normTitle))) {
+      return false;
+    }
+    return amt > 0 || Boolean(normTitle);
+  });
+}
+
+/**
+ * Merges original AP baseline items with disbursed/acknowledged Supplemental Budget line items
  * for Financial Liquidation's "Proposed Budget Baseline Categories (Reference Guide)".
  * Deduplicates identical item titles by appending the SBR reference code only on collision.
  */
 export function mergeLiquidationBaselineWithSupplementalItems(
   baseItems: LiquidationBaselineCategoryItem[] = [],
   approvedSbrs: SupplementalBudgetRequest[] = [],
-  fallbackRolledItems: SupplementalEventExpenseItem[] = []
+  fallbackRolledItems: SupplementalEventExpenseItem[] = [],
+  options?: { isZeroBudgetBase?: boolean }
 ): LiquidationBaselineCategoryItem[] {
-  const result: LiquidationBaselineCategoryItem[] = (baseItems || []).map((b) => ({
+  const cleanedBase = filterMeaningfulBaseLiquidationItems(
+    baseItems,
+    Boolean(options?.isZeroBudgetBase)
+  );
+  const result: LiquidationBaselineCategoryItem[] = cleanedBase.map((b) => ({
     ...b,
     isSupplemental: Boolean(b.isSupplemental),
   }));
@@ -762,8 +856,9 @@ export function mergeLiquidationBaselineWithSupplementalItems(
 
     const qty = Number(item.quantity) || 0;
     const unitCost = Number(item.unitCost) || 0;
+    const unitLower = String(item.unit || '').trim().toLowerCase();
     const qtyUnitLabel =
-      qty > 0 && unitCost > 0
+      qty > 0 && unitCost > 0 && !(qty === 1 && (!unitLower || unitLower === 'lot'))
         ? `${qty} ${item.unit || 'pcs'} × ₱${unitCost.toLocaleString()}`
         : undefined;
 
@@ -778,9 +873,10 @@ export function mergeLiquidationBaselineWithSupplementalItems(
     });
   };
 
-  const approvedOnly = (approvedSbrs || []).filter((s) => s && !s.isDeleted && s.status === 'approved');
-  if (approvedOnly.length > 0) {
-    approvedOnly.forEach((sbr) => {
+  // Only include SBRs whose funds have actually been disbursed (voucher uploaded) or acknowledged in Finance Center
+  const disbursedOnly = (approvedSbrs || []).filter((s) => isSbrDisbursedForLiquidation(s));
+  if (disbursedOnly.length > 0) {
+    disbursedOnly.forEach((sbr) => {
       (sbr.additionalItems || []).forEach((it) => {
         appendItem({
           id: it.id,
@@ -794,7 +890,11 @@ export function mergeLiquidationBaselineWithSupplementalItems(
         });
       });
     });
-  } else if (Array.isArray(fallbackRolledItems) && fallbackRolledItems.length > 0) {
+  } else if (
+    (approvedSbrs || []).length === 0 &&
+    Array.isArray(fallbackRolledItems) &&
+    fallbackRolledItems.length > 0
+  ) {
     fallbackRolledItems.forEach((it) => appendItem(it));
   }
 

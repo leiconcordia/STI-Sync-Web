@@ -99,6 +99,34 @@ export function useOfficerAuth() {
             signatoryRecords.push({ id: d.id, ...data });
           }
         });
+
+        // A2. Also check Substitute Signatory slots (only active when Primary's portal is deactivated / on leave)
+        const subQueries = [
+          getDocs(query(collection(db, 'institutional_signatories'), where('substituteEmail', '==', cleanId))),
+          getDocs(query(collection(db, 'institutional_signatories'), where('substituteEmployeeId', '==', trimmedId))),
+        ];
+        if (trimmedId !== cleanId) {
+          subQueries.push(getDocs(query(collection(db, 'institutional_signatories'), where('substituteEmail', '==', trimmedId))));
+        }
+        const subSnaps = await Promise.all(subQueries);
+        const seenSubIds = new Set(signatoryRecords.map((r) => `sub:${r.id}`));
+        subSnaps.forEach((snap) => {
+          snap.docs.forEach((d) => {
+            const data = d.data();
+            if (isSasSignatoryRecord(d.id, data)) return;
+            if (data.isActive === false) return;
+            const subKey = `sub:${d.id}`;
+            if (seenSubIds.has(subKey)) return;
+            seenSubIds.add(subKey);
+            signatoryRecords.push({
+              id: d.id,
+              ...data,
+              email: data.substituteEmail || data.substitute?.email || cleanId,
+              _matchedAsSubstitute: true,
+              _portalDeactivated: data.portalDeactivated === true,
+            });
+          });
+        });
       } catch (sigErr) {
         console.warn('[useOfficerAuth] Signatory lookup error:', sigErr);
       }
@@ -352,6 +380,15 @@ export function useOfficerAuth() {
           );
         } else if (officerRecords.length > 0 && officerRecords.every((record) => record.hasWebPortalAccess === false)) {
           setError('Your officer appointment does not include Web Portal access. Please contact your Club Adviser or SAS Administrator, or use the STI Sync mobile app.');
+        } else if (
+          signatoryRecords.length > 0 &&
+          signatoryRecords.every((record) => record._matchedAsSubstitute && !record._portalDeactivated) &&
+          officerRecords.length === 0 &&
+          adviserRecords.length === 0
+        ) {
+          setError(
+            "You are assigned as a Substitute Signatory, but the Primary Signatory's portal is currently active. Delegated access is only unlocked when the Primary Signatory deactivates their portal (On Leave)."
+          );
         } else {
           setError('No active organization or signatory role is available for this account. Contact SAS.');
         }

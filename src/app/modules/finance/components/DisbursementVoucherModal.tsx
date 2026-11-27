@@ -196,6 +196,10 @@ export default function DisbursementVoucherModal({
   const effectiveFundingSource = String(
     event.fundingSource || proposalFallbackData?.fundingSource || 'school_budget'
   );
+  const isZeroBudgetBaseAp =
+    effectiveFundingSource === 'zero_budget' &&
+    Number(event.totalApprovedBudget || 0) <= 0 &&
+    !isAlreadyAttached;
   const { data: eventPayables = [] } = useEventPayablesStream(
     effectiveFundingSource === 'student_contributions' ? event?.id || '' : ''
   );
@@ -627,6 +631,10 @@ export default function DisbursementVoucherModal({
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700 inline-flex items-center gap-1">
                     <Lock className="w-2.5 h-2.5" /> View Only
                   </span>
+                ) : isZeroBudgetBaseAp ? (
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-200 border border-blue-400/30">
+                    Supplemental Only
+                  </span>
                 ) : (
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-400/30">
                     Draft
@@ -719,7 +727,23 @@ export default function DisbursementVoucherModal({
             </div>
           )}
 
-          {/* 1. Document File Upload Area */}
+          {isZeroBudgetBaseAp ? (
+            <div className="p-4 bg-blue-50/80 border border-blue-200 rounded-2xl flex items-start gap-3 text-xs text-blue-950">
+              <FileCheck className="w-5 h-5 text-[#0E4EBD] shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <div className="font-bold text-[#001A4D]">
+                  Original Activity Proposal was Non-Monetary (₱0.00)
+                </div>
+                <p className="text-slate-700 leading-relaxed">
+                  No Primary AP Disbursement Voucher is needed for a Non-Monetary activity. Upload the dedicated{' '}
+                  <strong>Supplemental Disbursement Voucher</strong> below to deduct the Misc Fee / Retained Fund
+                  allocation and reflect the supplemental funds in Financial Liquidation.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* 1. Document File Upload Area */}
           <div className="space-y-2">
             <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider">
               Scanned Disbursement Voucher / Cheque Proof <span className="text-rose-500">*</span>
@@ -1027,6 +1051,9 @@ export default function DisbursementVoucherModal({
               />
               <span className="text-[10px] text-slate-400">Special remarks or release instructions</span>
             </div>
+          </div>
+            </>
+          )}
 
             {/* Dedicated Supplemental Budget Disbursement Voucher Input(s) for Approved SBRs */}
             <SupplementalDisbursementVoucherPanel
@@ -1044,7 +1071,6 @@ export default function DisbursementVoucherModal({
                 role: isAdmin ? 'admin' : 'adviser',
               }}
             />
-          </div>
 
           </div>
 
@@ -1055,10 +1081,10 @@ export default function DisbursementVoucherModal({
               onClick={onClose}
               className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
             >
-              {isEffectiveReadOnly ? 'Close' : 'Cancel'}
+              {isEffectiveReadOnly || isZeroBudgetBaseAp ? 'Close' : 'Cancel'}
             </button>
 
-            {!isEffectiveReadOnly && (
+            {!isEffectiveReadOnly && !isZeroBudgetBaseAp && (
               <button
                 type="submit"
                 disabled={

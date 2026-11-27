@@ -42,6 +42,7 @@ export async function changeAccountPassword(currentPassword: string, newPassword
   }
 
   const refs = new Map<string, any>();
+  const substituteSignatoryRefs = new Map<string, any>();
   const studentIds = new Set<string>();
   let pendingTemporary: string | null = null;
   for (const name of ['organization_advisers', 'institutional_signatories', 'students', 'organization_officers']) {
@@ -55,18 +56,29 @@ export async function changeAccountPassword(currentPassword: string, newPassword
       });
     }
   }
+  // Also match Substitute Signatory slots assigned to this user (without touching the Primary Signatory's credentials)
+  for (const [field, value] of [['substituteEmail', email], ['substituteAuthUid', user.uid]]) {
+    const subMatches = await getDocs(query(collection(db, 'institutional_signatories'), where(field, '==', value)));
+    subMatches.docs.forEach((item) => {
+      substituteSignatoryRefs.set(item.ref.path, item.ref);
+      const subData = item.data()?.substitute;
+      if (typeof subData?.tempPass === 'string' && subData.tempPass.length) {
+        pendingTemporary = subData.tempPass;
+      }
+    });
+  }
   for (const studentId of studentIds) {
     const matches = await getDocs(query(collection(db, 'organization_officers'), where('studentId', '==', studentId)));
     matches.docs.forEach((item) => refs.set(item.ref.path, item.ref));
   }
-  if (!refs.size) throw new Error('No linked account profile was found. Contact SAS.');
+  if (!refs.size && !substituteSignatoryRefs.size) throw new Error('No linked account profile was found. Contact SAS.');
   // Same-password requests may finish a failed Firestore cleanup only after
   // Firebase reauthentication proves the permanent password was already saved.
   const cleanupOnly = currentPassword === newPassword && pendingTemporary && pendingTemporary !== currentPassword;
   if (currentPassword === newPassword && !cleanupOnly) throw new Error('Choose a password different from your current or temporary password.');
   if (pendingTemporary === newPassword) throw new Error('You cannot reuse the temporary password.');
   const organizations = await getDocs(query(collection(db, 'organizations'), where('adviser.email', '==', email)));
-  if (refs.size + organizations.size > 450) throw new Error('Too many duplicate account records. Contact SAS.');
+  if (refs.size + substituteSignatoryRefs.size + organizations.size > 450) throw new Error('Too many duplicate account records. Contact SAS.');
   if (!cleanupOnly) {
     try {
       await updatePassword(user, newPassword);
@@ -89,6 +101,13 @@ export async function changeAccountPassword(currentPassword: string, newPassword
       ...(ref.parent.id === 'organization_officers' ? { authUid: user.uid, email } : {}),
       temporaryPassword: deleteField(), defaultPassword: deleteField(), customPassword: deleteField(),
       passwordHash: deleteField(), requiresChangePassword: deleteField(), updatedAt: serverTimestamp(),
+    }));
+    substituteSignatoryRefs.forEach((ref) => batch.update(ref, {
+      'substitute.tempPass': null,
+      'substitute.requiresPasswordChange': false,
+      'substitute.authUid': user.uid,
+      substituteAuthUid: user.uid,
+      updatedAt: serverTimestamp(),
     }));
     organizations.docs.forEach((item) => batch.update(item.ref, {
       'adviser.tempPass': null, 'adviser.requiresPasswordChange': false,

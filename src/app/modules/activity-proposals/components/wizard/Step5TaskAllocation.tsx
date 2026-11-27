@@ -31,7 +31,11 @@ interface Step5Props {
 export default function Step5TaskAllocation({ formData, onChange, errors = {} }: Step5Props) {
   const todayStr = useMemo(() => format(new Date(), 'yyyy-MM-dd'), []);
   const isUrgent = Boolean(formData.isUrgent);
+  const isAlreadySubmitted =
+    Boolean(formData.status) &&
+    !['draft', 'returned', 'returned_for_revision', 'for_revision'].includes(String(formData.status));
   const {
+    submissionDateStr,
     standardMinDate,
     minTaskDate,
     implementationStartDate: eventDate,
@@ -43,9 +47,10 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
         eventDate: formData.date,
         sessions: formData.sessions,
         isUrgent,
+        submissionDateStr: isAlreadySubmitted ? formData.submissionDate : undefined,
         todayStr,
       }),
-    [formData.date, formData.sessions, isUrgent, todayStr]
+    [formData.date, formData.sessions, formData.submissionDate, isAlreadySubmitted, isUrgent, todayStr]
   );
 
   const tasks: ProposalTask[] = formData.tasks && formData.tasks.length > 0
@@ -103,7 +108,15 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
             </h4>
           </div>
           <p className="text-xs text-indigo-700/90 mt-0.5 leading-relaxed">
-            Itemize preparatory milestones, assigned committees, and completion dates. Tasks must be scheduled from <strong>today ({todayStr})</strong> up to the <strong>implementation date</strong>.
+            {isUrgent ? (
+              <>
+                Itemize milestones, assigned committees, and completion dates. Under <strong>Urgent Mode</strong>, tasks must be scheduled from the <strong>AP submission date ({submissionDateStr})</strong> up to the <strong>implementation date</strong>.
+              </>
+            ) : (
+              <>
+                Itemize milestones, assigned committees, and completion dates. Tasks must be scheduled starting <strong>15 calendar days from AP submission ({minTaskDate})</strong> up to the <strong>implementation date</strong>.
+              </>
+            )}
           </p>
         </div>
       </div>
@@ -123,7 +136,7 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
         </div>
         <div className="text-[11px] text-blue-800 font-medium">
           {maxTaskDate ? (
-            <span>Allowed task window: <strong>{todayStr}</strong> to <strong>{maxTaskDate}</strong></span>
+            <span>Allowed task window: <strong>{minTaskDate}</strong> to <strong>{maxTaskDate}</strong></span>
           ) : (
             <span className="text-amber-700 font-semibold">⚠ Please configure event date in Step 4</span>
           )}
@@ -134,7 +147,15 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
       <div className="p-3 bg-amber-50/70 border border-amber-200/80 rounded-xl text-xs text-amber-800 flex items-start gap-2">
         <Clock className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
         <div className="leading-relaxed">
-          <strong>Task Date Policy:</strong> Task completion dates must fall between <strong>today ({todayStr})</strong> and the <strong>implementation date ({implementationEndDate || 'set in Step 4'})</strong>, ordered chronologically.
+          {isUrgent ? (
+            <>
+              <strong>Task Date Policy (Urgent Exemption):</strong> Task completion dates must fall between the <strong>AP submission date ({submissionDateStr})</strong> and the <strong>implementation date ({implementationEndDate || 'set in Step 4'})</strong>, ordered chronologically.
+            </>
+          ) : (
+            <>
+              <strong>Task Date Policy (15-Day Rule):</strong> Task completion dates must fall between <strong>{standardMinDate}</strong> (15 calendar days from AP submission on {submissionDateStr}) and the <strong>implementation date ({implementationEndDate || 'set in Step 4'})</strong>, ordered chronologically.
+            </>
+          )}
         </div>
       </div>
 
@@ -152,7 +173,7 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
           const isDateExceedingEvent = Boolean(
             maxTaskDate && task.completionDate && task.completionDate > maxTaskDate
           );
-          const isDateInPast = Boolean(task.completionDate && task.completionDate < todayStr);
+          const isDateBeforeMin = Boolean(task.completionDate && task.completionDate < minTaskDate);
           const isPrecededByLaterTask = Boolean(
             index > 0 &&
             task.completionDate &&
@@ -164,7 +185,7 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
             <div
               key={task.id || index}
               className={`p-4 bg-white border rounded-2xl shadow-xs transition-colors flex flex-col gap-3 ${
-                isDateExceedingEvent || isDateInPast
+                isDateExceedingEvent || isDateBeforeMin
                   ? 'border-red-300 bg-red-50/10'
                   : 'border-slate-200 hover:border-slate-300'
               }`}
@@ -231,7 +252,7 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
                       value={task.completionDate}
                       onChange={(e) => updateTask(index, { completionDate: e.target.value })}
                       className={`w-full px-3 py-2 bg-slate-50/60 border rounded-xl text-xs focus:outline-none focus:ring-2 transition-all font-semibold ${
-                        isDateExceedingEvent || isDateInPast
+                        isDateExceedingEvent || isDateBeforeMin
                           ? 'border-red-400 text-red-900 bg-red-50/30 focus:ring-red-500/20'
                           : 'border-slate-200 text-slate-800 focus:ring-indigo-500/20 focus:border-indigo-500'
                       }`}
@@ -262,14 +283,18 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
                 </div>
               )}
 
-              {isDateInPast && (
+              {isDateBeforeMin && (
                 <div className="text-[11px] text-red-600 font-semibold flex items-center gap-1.5 bg-red-50 border border-red-200 px-3 py-1.5 rounded-lg">
                   <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-                  <span>Completion date cannot be in the past ({task.completionDate}). Earliest allowed is today ({todayStr}).</span>
+                  <span>
+                    {isUrgent
+                      ? `Completion date (${task.completionDate}) cannot be earlier than the AP submission date (${submissionDateStr}).`
+                      : `Completion date (${task.completionDate}) must be at least 15 calendar days after AP submission (${minTaskDate} or later).`}
+                  </span>
                 </div>
               )}
 
-              {isPrecededByLaterTask && !isDateExceedingEvent && !isDateInPast && (
+              {isPrecededByLaterTask && !isDateExceedingEvent && !isDateBeforeMin && (
                 <div className="text-[11px] text-amber-700 font-medium flex items-center gap-1.5 bg-amber-50 border border-amber-200 px-3 py-1 rounded-lg">
                   <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
                   <span>

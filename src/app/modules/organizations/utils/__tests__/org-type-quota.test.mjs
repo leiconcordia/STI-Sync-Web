@@ -1,10 +1,15 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  analyzeGlobalLimitImpact,
+  analyzeOrgTypeLimitImpact,
   checkStudentOrgTypeQuota,
   checkStudentGlobalOrgQuota,
   checkStudentMembershipLimits,
+  findConflictingOrgTypesForGlobalLimit,
   normalizeMaxMembershipsPerStudent,
+  validateOrgTypeArchival,
+  validateOrgTypeLimitAgainstGlobal,
 } from '../org-type-quota.utils.ts';
 
 describe('Per-Organization-Type Membership Quota Enforcement', () => {
@@ -159,5 +164,119 @@ describe('Per-Organization-Type Membership Quota Enforcement', () => {
     });
     assert.equal(combined.allowed, false);
     assert.equal(combined.failedRule, 'org_type');
+  });
+
+  test('enforces cross-limit consistency (Per-Type Limit <= Global Limit) and detects conflicting types', () => {
+    // Per-type 3 exceeds Global 2 -> blocked
+    const invalid = validateOrgTypeLimitAgainstGlobal({
+      proposedTypeLimit: 3,
+      globalLimit: 2,
+      orgTypeName: 'Sports',
+    });
+    assert.equal(invalid.valid, false);
+    assert.match(invalid.reason || '', /cannot exceed the Global Maximum.*\(2\)/i);
+
+    // Per-type 2 <= Global 2 -> valid; null (follow global) -> valid; Global null -> any per-type valid
+    assert.equal(
+      validateOrgTypeLimitAgainstGlobal({ proposedTypeLimit: 2, globalLimit: 2, orgTypeName: 'Sports' }).valid,
+      true
+    );
+    assert.equal(
+      validateOrgTypeLimitAgainstGlobal({ proposedTypeLimit: null, globalLimit: 2, orgTypeName: 'Sports' }).valid,
+      true
+    );
+    assert.equal(
+      validateOrgTypeLimitAgainstGlobal({ proposedTypeLimit: 5, globalLimit: null, orgTypeName: 'Sports' }).valid,
+      true
+    );
+
+    // Lowering Global Limit to 2 detects active org types with limit > 2 (ignores archived types)
+    const conflicts = findConflictingOrgTypesForGlobalLimit({
+      proposedGlobalLimit: 2,
+      orgTypes: [
+        { id: 't1', name: 'Academic', maxMembershipsPerStudent: 2, archived: false },
+        { id: 't2', name: 'Sports', maxMembershipsPerStudent: 3, archived: false },
+        { id: 't3', name: 'Interest', maxMembershipsPerStudent: null, archived: false },
+        { id: 't4', name: 'Legacy Archived', maxMembershipsPerStudent: 5, archived: true },
+      ],
+    });
+    assert.equal(conflicts.length, 1);
+    assert.equal(conflicts[0].id, 't2');
+    assert.equal(conflicts[0].currentLimit, 3);
+    assert.equal(conflicts[0].newCappedLimit, 2);
+  });
+
+  test('analyzes pre-save impact on existing students for Global and Per-Type limit reductions', () => {
+    const orgs = [
+      ...allOrganizations,
+      { id: 'org_archived', name: 'Old Club', acronym: 'OLD', typeId: 'type_academic', status: 'archived', archived: true },
+    ];
+    const memberships = [
+      // Student A: 3 active orgs across types (2 Academic + 1 Civic) + 1 archived + 1 removed
+      { studentId: '020001', studentName: 'Juan Dela Cruz', organizationId: 'org_jpcs', status: 'active' },
+      { studentId: '020001', studentName: 'Juan Dela Cruz', organizationId: 'org_acm', status: 'active' },
+      { studentId: '020001', studentName: 'Juan Dela Cruz', organizationId: 'org_redcross', status: 'active' },
+      { studentId: '020001', studentName: 'Juan Dela Cruz', organizationId: 'org_archived', status: 'active' },
+      { studentId: '020001', studentName: 'Juan Dela Cruz', organizationId: 'org_ieee', status: 'removed' },
+      // Student B: 2 active orgs (both Academic)
+      { studentId: '020002', studentName: 'Maria Santos', organizationId: 'org_jpcs', status: 'active' },
+      { studentId: '020002', studentName: 'Maria Santos', organizationId: 'org_acm', status: 'active' },
+    ];
+
+    // Lowering Global Limit to 2 affects only Student A (3 > 2), NOT Student B (2 == 2)
+    const globalImpact = analyzeGlobalLimitImpact({
+      proposedGlobalLimit: 2,
+      allOrganizations: orgs,
+      allMemberships: memberships,
+    });
+    assert.equal(globalImpact.totalAffected, 1);
+    assert.equal(globalImpact.affectedStudents[0].studentId, '020001');
+    assert.equal(globalImpact.affectedStudents[0].currentCount, 3);
+
+    // Lowering Academic Per-Type Limit to 1 affects BOTH Student A (2 Academic) & Student B (2 Academic)
+    const typeImpact = analyzeOrgTypeLimitImpact({
+      orgTypeId: 'type_academic',
+      proposedTypeLimit: 1,
+      allOrganizations: orgs,
+      allMemberships: memberships,
+    });
+    assert.equal(typeImpact.totalAffected, 2);
+    assert.equal(typeImpact.affectedStudents.every((s) => s.currentCount === 2), true);
+
+    // Setting Unlimited (null) affects 0 students
+    const unlimitedImpact = analyzeGlobalLimitImpact({
+      proposedGlobalLimit: null,
+      allOrganizations: orgs,
+      allMemberships: memberships,
+    });
+    assert.equal(unlimitedImpact.totalAffected, 0);
+  });
+
+  test('blocks archiving an Organization Classification while active clubs use it, and allows when none do', () => {
+    const orgs = [
+      { id: 'org_jpcs', name: 'Junior Philippine Computer Society', acronym: 'JPCS', typeId: 'type_academic', status: 'active' },
+      { id: 'org_acm', name: 'ACM Chapter', acronym: 'ACM', typeId: 'type_academic', status: 'active' },
+      { id: 'org_old', name: 'Old Sports Club', acronym: 'OSC', typeId: 'type_sports', status: 'archived', archived: true },
+    ];
+
+    const blocked = validateOrgTypeArchival({
+      orgTypeId: 'type_academic',
+      orgTypeName: 'Academic',
+      allOrganizations: orgs,
+    });
+    assert.equal(blocked.allowed, false);
+    assert.equal(blocked.activeClubCount, 2);
+    assert.match(blocked.reason || '', /Cannot archive "Academic": 2 active organizations/i);
+    assert.match(blocked.reason || '', /JPCS/);
+    assert.match(blocked.reason || '', /ACM/);
+
+    // Only archived clubs reference type_sports -> allowed
+    const allowed = validateOrgTypeArchival({
+      orgTypeId: 'type_sports',
+      orgTypeName: 'Sports',
+      allOrganizations: orgs,
+    });
+    assert.equal(allowed.allowed, true);
+    assert.equal(allowed.activeClubCount, 0);
   });
 });

@@ -52,6 +52,7 @@ import { resolvePARRemarksDescription } from '../../modules/post-activity-report
 import { getSasSignatoryConfig } from '../../modules/signatories/services/sas-signatory.service';
 import { SAS_ADMINS_COLLECTION } from '../../modules/auth/services/auth.service';
 import { formatPersonName } from '../../utils/name.utils';
+import { matchesSignatoryOrSubstituteStep } from '../../modules/signatories/utils/signatory-substitute.utils';
 import { formatCurrency, formatVariance } from '../../utils/currency';
 import { formatLongDateTime, formatTextWithLongDates } from '../../utils/date';
 import RevisionDiffViewerModal from '../../modules/workflow/components/RevisionDiffViewerModal';
@@ -416,17 +417,7 @@ export default function PAREndorsementModal({
   const activeSignatureUrl = signatorySession?.signatureUrl;
 
   const chain = activeReport.approvalChain || [];
-  const myStepIndex = chain.findIndex((s) => {
-    if (s.signatoryUid && (s.signatoryUid === signatorySession?.id || s.signatoryUid === signatorySession?.uid)) return true;
-    if (s.signatoryEmail && s.signatoryEmail.toLowerCase() === (signatorySession?.email || '').toLowerCase()) return true;
-    if (s.role && signatorySession?.role && s.role.toLowerCase() === signatorySession.role.toLowerCase()) return true;
-    if (s.roleTitle && signatorySession?.roleTitle) {
-      const sT = s.roleTitle.toLowerCase();
-      const uT = signatorySession.roleTitle.toLowerCase();
-      if (sT === uT || sT.includes(uT) || uT.includes(sT)) return true;
-    }
-    return false;
-  });
+  const myStepIndex = chain.findIndex((s) => matchesSignatoryOrSubstituteStep(s, signatorySession));
 
   const myStep = myStepIndex >= 0 ? chain[myStepIndex] : chain.find((s) => s.status === 'current');
 
@@ -493,6 +484,13 @@ export default function PAREndorsementModal({
           signatureUrl: activeSignatureUrl,
           canApprovePar: signatorySession?.canApprovePar,
           approvalDecision: decision,
+          actingAsSubstitute: Boolean(signatorySession?.actingAsSubstitute),
+          substituteUid: signatorySession?.substituteUid || signatorySession?.authUid || signatorySession?.uid,
+          delegatedForSignatoryId: signatorySession?.delegatedForSignatoryId,
+          delegatedForSignatoryUid: signatorySession?.delegatedForSignatoryUid,
+          delegatedForSignatoryName: signatorySession?.delegatedForSignatoryName,
+          delegatedForSignatoryEmail: signatorySession?.delegatedForSignatoryEmail,
+          delegatedForRoleTitle: signatorySession?.delegatedForRoleTitle,
         },
         '',
         decision

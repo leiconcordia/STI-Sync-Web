@@ -289,7 +289,7 @@ function ApprovedOrgActivitiesPanel({
                                 role: fcBudgetProfile?.isAdviser ? 'adviser' : 'officer',
                               });
                               fcToast.success(
-                                `Acknowledged ${sbr.referenceCode} and deducted ${fcFormatCurrency(sbr.requestedAmount)} from Club Treasury Ledger.`
+                                `Acknowledged ${sbr.referenceCode}! Deducted ${fcFormatCurrency(sbr.requestedAmount)} from Club Treasury Ledger and reflected in Financial Liquidation.`
                               );
                             } catch (err: any) {
                               fcToast.error(
@@ -312,7 +312,9 @@ function ApprovedOrgActivitiesPanel({
                       )}
                     </td>
                     <td className="py-2.5 px-3 text-[11px] text-gray-500">
-                      Rolls into parent event&apos;s Financial Liquidation baseline
+                      {isDeducted
+                        ? "Reflected in parent event's Financial Liquidation baseline"
+                        : 'Acknowledge to deduct from Club Ledger & reflect in Financial Liquidation'}
                     </td>
                   </tr>
                 ))}

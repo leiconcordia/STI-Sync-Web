@@ -17,6 +17,7 @@ import type { SupplementalBudgetRequest } from '../../modules/supplemental-budge
 import { useAllLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
 import { useAllPARsForSignatories } from '../../modules/post-activity-reports/hooks/usePostActivityReportStream';
 import { isSignatoryApplicableTo } from '../../modules/signatories/types/signatory.types';
+import { matchesSignatoryOrSubstituteStep } from '../../modules/signatories/utils/signatory-substitute.utils';
 import { isHiddenFromSasAndSignatories } from '../../modules/activity-proposals/utils/proposal-status-tracker.utils';
 import {
   documentStatus,
@@ -36,34 +37,7 @@ export function useSignatoryDocuments(session: any) {
   const { liquidations: allLiquidations, loading: liquidationsLoading, error: liquidationsError } = useAllLiquidations();
   const { pars: allPARs, loading: parsLoading, error: parsError } = useAllPARsForSignatories();
 
-  const userUid = session?.id || session?.uid;
-  const userEmail = (session?.email || '').toLowerCase().trim();
-  const userRole = session?.role || '';
-  const userRoleTitle = (session?.roleTitle || '').toLowerCase().trim();
-
-  const matchesSignatory = (step: any) => {
-    if (!step) return false;
-    const stepUid = step.signatoryUid || step.signedByUid;
-    const stepEmail = (step.signatoryEmail || step.signedByEmail || '').toLowerCase().trim();
-
-    const uidMatches = Boolean(
-      stepUid &&
-      ((session?.id && stepUid === session.id) || (session?.uid && stepUid === session.uid))
-    );
-    if (uidMatches) return true;
-
-    const emailMatches = Boolean(stepEmail && userEmail && stepEmail === userEmail);
-    if (emailMatches) return true;
-
-    if (!stepUid && !stepEmail) {
-      if (step.role && userRole && step.role.toLowerCase() === userRole.toLowerCase()) return true;
-      if (step.roleTitle && userRoleTitle) {
-        const sTitle = step.roleTitle.toLowerCase();
-        if (sTitle === userRoleTitle || sTitle.includes(userRoleTitle) || userRoleTitle.includes(sTitle)) return true;
-      }
-    }
-    return false;
-  };
+  const matchesSignatory = (step: any) => matchesSignatoryOrSubstituteStep(step, session);
 
   // Subscribe to Activity Proposals
   useEffect(() => {
@@ -404,6 +378,11 @@ export function useSignatoryDocuments(session: any) {
           email: session?.email,
           role: session?.role,
           roleTitle: session?.roleTitle,
+          actingAsSubstitute: session?.actingAsSubstitute,
+          delegatedForSignatoryId: session?.delegatedForSignatoryId,
+          delegatedForSignatoryUid: session?.delegatedForSignatoryUid,
+          delegatedForSignatoryEmail: session?.delegatedForSignatoryEmail,
+          delegatedForRoleTitle: session?.delegatedForRoleTitle,
         });
         if (isMyTurn) {
           pending.push(sbr);

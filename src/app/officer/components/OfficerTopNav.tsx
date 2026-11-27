@@ -86,7 +86,11 @@ export function OfficerTopNav({ title }: OfficerTopNavProps) {
                   <p className="text-xs text-[#888780]">
                     {profile?.isAdviser
                       ? adviserAuthority.isCoAdviser
-                        ? 'Club Co-Adviser'
+                        ? adviserAuthority.canReviewOfficerSubmissions
+                          ? 'Acting Club Adviser (Sub Active)'
+                          : 'Club Co-Adviser (Standby)'
+                        : adviserAuthority.isPrimaryUnavailable
+                        ? 'Club Adviser (Portal Inactive)'
                         : 'Club Adviser'
                       : 'Organization Officer'}
                   </p>

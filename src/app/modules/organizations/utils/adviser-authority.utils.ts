@@ -1,16 +1,23 @@
 /**
  * src/app/modules/organizations/utils/adviser-authority.utils.ts
  *
- * Pure governance utilities for Primary Club Adviser + Secondary Club Co-Adviser
- * availability evaluation and automatic approval authority transfer.
+ * Pure governance utilities for Primary Club Adviser + Secondary/Substitute Club Co-Adviser
+ * availability evaluation, strict mutual-exclusion approval authority transfer, and
+ * portal inactivation guardrails.
  *
  * Governance Model:
- * - Decision 1 (Option B): Either Primary Adviser or Co-Adviser can review/approve/return/reject
- *   Officer submissions (AP, PAR, FL, SBR) at any time (first-to-act resolves the Adviser Gate).
- * - Decision 2 (Option A): Co-Adviser always has portal view access & Officer review rights;
- *   when the Primary Adviser is marked Unavailable (manual toggle OR active leave date range),
- *   full Adviser authority automatically transfers to the Co-Adviser with "Acting on behalf of [Primary]"
- *   audit attribution.
+ * - While Primary Club Adviser is ACTIVE (`available`):
+ *   - Primary Adviser holds full approval & filing authority (`canReviewOfficerSubmissions = true`).
+ *   - Substitute / Co-Adviser is in Read-Only Standby Mode (`canReviewOfficerSubmissions = false`)
+ *     and CANNOT approve, return, or reject Officer submissions.
+ * - Once Primary Club Adviser sets Portal INACTIVE (`unavailable` / On Leave):
+ *   - Approval & filing authority immediately transfers to the assigned Substitute / Co-Adviser
+ *     (`canReviewOfficerSubmissions = true`, `canPerformFullAdviserActions = true`) with
+ *     "Acting for [Primary Name]" attribution and personal e-signature isolation.
+ *   - Primary Adviser's portal is paused (`canReviewOfficerSubmissions = false`) until reactivated.
+ * - Strict Inactivation Guardrail:
+ *   - Primary Adviser CANNOT set their portal Inactive if the organization has pending Officer
+ *     submissions awaiting Adviser review (AP, SBR, FL, PAR) AND no Substitute / Co-Adviser is assigned.
  */
 
 import type { OrgAdviserAvailability, OrgAdviserData, OrgAdviserRole } from '../types/organization.types';
@@ -21,15 +28,35 @@ export interface OrganizationAdviserContext {
   adviserAvailability?: OrgAdviserAvailability | null;
 }
 
+export interface AdviserPendingDocSummary {
+  id: string;
+  documentType: 'proposal' | 'sbr' | 'liquidation' | 'par' | string;
+  title?: string;
+  code?: string;
+  submittedByName?: string;
+}
+
+export interface AdviserInactivationValidationResult {
+  allowed: boolean;
+  reason: string | null;
+  pendingCount: number;
+  hasCoAdviser: boolean;
+}
+
+export interface AdviserRemoveSubValidationResult {
+  allowed: boolean;
+  reason: string | null;
+}
+
 export interface EffectiveAdviserAuthority {
   /** Whether the viewer is an active Primary Adviser or Co-Adviser of this organization */
   isOrgAdviser: boolean;
   isPrimaryAdviser: boolean;
   isCoAdviser: boolean;
   viewerAdviserRole: OrgAdviserRole | null;
-  /** True when the Primary Adviser is currently unavailable (manual flag OR active date window) */
+  /** True when the Primary Adviser is currently inactive/unavailable */
   isPrimaryUnavailable: boolean;
-  /** True when the Primary Adviser is unavailable AND a Co-Adviser is assigned (authority transferred) */
+  /** True when the Primary Adviser is unavailable AND a Substitute / Co-Adviser is assigned */
   isAuthorityTransferredToCoAdviser: boolean;
   /** True if the viewer may review/approve/return/reject Officer submissions (AP, FL, PAR, SBR) */
   canReviewOfficerSubmissions: boolean;
@@ -37,8 +64,14 @@ export interface EffectiveAdviserAuthority {
   canPerformFullAdviserActions: boolean;
   /** Name of the Primary Adviser if the Co-Adviser is acting while Primary is unavailable */
   actingOnBehalfOfName?: string;
+  /** Name of the Primary Adviser for messaging */
+  primaryAdviserName?: string;
+  /** Name of the assigned Substitute / Co-Adviser if present */
+  coAdviserName?: string;
   /** Human-readable reason if Primary is unavailable */
   unavailableReason?: string;
+  /** Explanation when approval actions are currently locked for the viewer */
+  approvalBlockedReason?: string;
   /** Human-readable banner summary for Adviser Decision Panel / Portal header */
   statusBannerText?: string;
 }
@@ -57,12 +90,20 @@ function isValidYmd(value?: string | null): boolean {
 }
 
 /**
- * Evaluates whether the Primary Club Adviser is currently unavailable.
+ * Check whether an organization currently has an assigned Substitute / Secondary Co-Adviser.
+ */
+export function hasAssignedCoAdviser(org?: OrganizationAdviserContext | null): boolean {
+  const co = org?.coAdviser;
+  if (!co || typeof co !== 'object') return false;
+  return Boolean(String(co.email || '').trim() || String(co.authUid || '').trim() || String(co.name || '').trim());
+}
+
+/**
+ * Evaluates whether the Primary Club Adviser is currently inactive / unavailable.
  * Supports:
- * 1. Explicit manual status (`primaryStatus === 'unavailable'`) — unless an `unavailableUntil` date
- *    is set and has already passed (automatic restoration after leave ends).
- * 2. Scheduled leave window (`unavailableFrom`..`unavailableUntil`) — automatically activates on
- *    start date and automatically restores to Primary Adviser the day after end date.
+ * 1. Explicit manual status (`primaryStatus === 'unavailable'`) — unless a legacy `unavailableUntil`
+ *    date is set and has already passed.
+ * 2. Legacy scheduled leave window (`unavailableFrom`..`unavailableUntil`).
  */
 export function isPrimaryAdviserUnavailable(
   availability?: OrgAdviserAvailability | null,
@@ -74,23 +115,71 @@ export function isPrimaryAdviserUnavailable(
   const from = isValidYmd(availability.unavailableFrom) ? availability.unavailableFrom!.trim() : '';
   const until = isValidYmd(availability.unavailableUntil) ? availability.unavailableUntil!.trim() : '';
 
-  // If a date range is configured, evaluate it strictly
   if (from || until) {
     if (from && today < from) {
-      // Scheduled for a future date -> still available today unless manually forced without future start
       return false;
     }
     if (until && today > until) {
-      // Leave period ended -> automatically restored to Primary Adviser
       return false;
     }
-    // Today falls inside [from, until] (or open-ended start/end)
     if (availability.primaryStatus === 'unavailable' || Boolean(from && until)) {
       return true;
     }
   }
 
   return availability.primaryStatus === 'unavailable';
+}
+
+/**
+ * Strict Adviser Portal Inactivation Guardrail:
+ * - Blocks setting the Primary Adviser portal Inactive if there are pending Officer submissions
+ *   awaiting Adviser review AND no Substitute / Co-Adviser is assigned.
+ * - Allows inactivation if a Substitute / Co-Adviser is assigned (even with pending documents)
+ *   OR if there are zero pending documents.
+ */
+export function validateAdviserPortalInactivation(params: {
+  hasCoAdviser: boolean;
+  pendingDocuments: AdviserPendingDocSummary[];
+}): AdviserInactivationValidationResult {
+  const pendingDocuments = Array.isArray(params.pendingDocuments) ? params.pendingDocuments : [];
+  const pendingCount = pendingDocuments.length;
+  const hasCoAdviser = Boolean(params.hasCoAdviser);
+
+  if (pendingCount > 0 && !hasCoAdviser) {
+    return {
+      allowed: false,
+      reason:
+        `You cannot set your Adviser Portal to Inactive while ${pendingCount} pending Officer document${pendingCount === 1 ? '' : 's'} await Adviser review and no Substitute / Co-Adviser is assigned. Assign a Substitute Adviser first or review your pending documents.`,
+      pendingCount,
+      hasCoAdviser: false,
+    };
+  }
+
+  return {
+    allowed: true,
+    reason: null,
+    pendingCount,
+    hasCoAdviser,
+  };
+}
+
+/**
+ * Prevent unassigning the Substitute / Co-Adviser while the Primary Adviser portal is
+ * currently Inactive and there are pending Officer documents awaiting Adviser review.
+ */
+export function validateRemoveCoAdviser(params: {
+  primaryUnavailable: boolean;
+  pendingDocuments: AdviserPendingDocSummary[];
+}): AdviserRemoveSubValidationResult {
+  const pendingCount = Array.isArray(params.pendingDocuments) ? params.pendingDocuments.length : 0;
+  if (params.primaryUnavailable && pendingCount > 0) {
+    return {
+      allowed: false,
+      reason:
+        `Cannot remove the Substitute / Co-Adviser while the Primary Adviser portal is Inactive and ${pendingCount} pending document${pendingCount === 1 ? '' : 's'} require Adviser review. Reactivate the Primary Adviser portal or assign a replacement first.`,
+    };
+  }
+  return { allowed: true, reason: null };
 }
 
 function matchesAdviserRecord(
@@ -107,7 +196,10 @@ function matchesAdviserRecord(
 }
 
 /**
- * Resolves the effective Adviser & Co-Adviser permissions and audit attribution for a viewer.
+ * Resolves the effective Adviser & Substitute/Co-Adviser permissions and audit attribution.
+ * Enforces strict mutual exclusion:
+ * - Primary Active -> ONLY Primary can approve; Substitute/Co-Adviser is Standby (cannot approve).
+ * - Primary Inactive -> Approval authority transfers to Substitute/Co-Adviser; Primary is paused.
  */
 export function resolveEffectiveAdviserAuthority(params: {
   organization?: OrganizationAdviserContext | null;
@@ -118,7 +210,7 @@ export function resolveEffectiveAdviserAuthority(params: {
   now?: Date;
 }): EffectiveAdviserAuthority {
   const org = params.organization;
-  const hasCoAdviser = Boolean(org?.coAdviser && (org.coAdviser.email || org.coAdviser.name));
+  const hasCoAdviser = hasAssignedCoAdviser(org);
   const primaryUnavailable = isPrimaryAdviserUnavailable(org?.adviserAvailability, params.now);
   const isAuthorityTransferredToCoAdviser = primaryUnavailable && hasCoAdviser;
 
@@ -136,19 +228,43 @@ export function resolveEffectiveAdviserAuthority(params: {
   const isCoAdviser = viewerAdviserRole === 'co_adviser';
   const isOrgAdviser = isPrimaryAdviser || isCoAdviser;
 
-  // Both Primary Adviser and Co-Adviser hold full equal Club Adviser authority (first-to-act resolves the Adviser Gate).
-  const canReviewOfficerSubmissions = isOrgAdviser;
-  const canPerformFullAdviserActions = isOrgAdviser;
-
   const primaryName = org?.adviser?.name || 'Primary Club Adviser';
-  const actingOnBehalfOfName =
-    isCoAdviser && isAuthorityTransferredToCoAdviser ? primaryName : undefined;
+  const coAdviserName = org?.coAdviser?.name || undefined;
   const unavailableReason = org?.adviserAvailability?.unavailableReason?.trim() || undefined;
 
+  // Strict single-active-approver rule
+  let canReviewOfficerSubmissions = false;
+  let canPerformFullAdviserActions = false;
+  let approvalBlockedReason: string | undefined;
   let statusBannerText: string | undefined;
-  if (isCoAdviser) {
-    statusBannerText = `Signed in as Secondary Club Co-Adviser. You hold full Club Adviser authority alongside ${primaryName}.`;
+
+  if (isPrimaryAdviser) {
+    if (!primaryUnavailable) {
+      canReviewOfficerSubmissions = true;
+      canPerformFullAdviserActions = true;
+    } else {
+      canReviewOfficerSubmissions = false;
+      canPerformFullAdviserActions = false;
+      approvalBlockedReason = coAdviserName
+        ? `Your Adviser Portal is currently Inactive (${unavailableReason || 'On Leave'}). Approval authority has been transferred to ${coAdviserName}. Reactivate your portal in Settings to approve documents.`
+        : `Your Adviser Portal is currently Inactive (${unavailableReason || 'On Leave'}). Reactivate your portal in Settings to approve documents.`;
+      statusBannerText = approvalBlockedReason;
+    }
+  } else if (isCoAdviser) {
+    if (primaryUnavailable) {
+      canReviewOfficerSubmissions = true;
+      canPerformFullAdviserActions = true;
+      statusBannerText = `Acting Club Adviser Mode — Approval authority transferred while ${primaryName} is inactive (${unavailableReason || 'On Leave'}).`;
+    } else {
+      canReviewOfficerSubmissions = false;
+      canPerformFullAdviserActions = false;
+      approvalBlockedReason = `Standby Mode — Primary Adviser ${primaryName} is currently active. Substitute advisers cannot approve or return submissions while the Primary Adviser is active.`;
+      statusBannerText = approvalBlockedReason;
+    }
   }
+
+  const actingOnBehalfOfName =
+    isCoAdviser && isAuthorityTransferredToCoAdviser ? primaryName : undefined;
 
   return {
     isOrgAdviser,
@@ -160,7 +276,10 @@ export function resolveEffectiveAdviserAuthority(params: {
     canReviewOfficerSubmissions,
     canPerformFullAdviserActions,
     actingOnBehalfOfName,
+    primaryAdviserName: primaryName,
+    coAdviserName,
     unavailableReason,
+    approvalBlockedReason,
     statusBannerText,
   };
 }

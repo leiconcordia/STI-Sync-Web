@@ -75,9 +75,35 @@ export type SignatoryDocumentScope =
   | 'par'
   | string;
 
+export interface SignatorySubstituteConfig {
+  uid: string;
+  authUid?: string;
+  employeeId?: string;
+  name: string;
+  firstName?: string;
+  lastName?: string;
+  middleName?: string;
+  middleInitial?: string;
+  email: string;
+  department?: string;
+  departmentId?: string;
+  title?: string;
+  signatureUrl?: string | null;
+  signatureDataUrl?: string | null;
+  signatureUpdatedAt?: any;
+  accountProvisioning: 'created' | 'reused';
+  requiresPasswordChange?: boolean;
+  tempPass?: string | null;
+  assignedAt?: any;
+  assignedByUid?: string;
+  assignedByName?: string;
+  assignedByRole?: 'signatory' | 'admin';
+}
+
 export interface InstitutionalSignatory {
   id: string;
   uid?: string;
+  authUid?: string;
   name: string;
   firstName?: string;
   lastName?: string;
@@ -102,6 +128,16 @@ export interface InstitutionalSignatory {
   canApprovePar?: boolean;
   defaultSignatoryLabel?: string;
   isActive: boolean;
+  // Substitute Signatory & Portal Deactivation (On-Leave Delegation)
+  substitute?: SignatorySubstituteConfig | null;
+  substituteEmail?: string | null;
+  substituteAuthUid?: string | null;
+  substituteEmployeeId?: string | null;
+  portalDeactivated?: boolean;
+  portalDeactivatedReason?: string | null;
+  portalDeactivatedUntil?: string | null;
+  portalDeactivatedAt?: any;
+  portalDeactivatedBy?: string | null;
   requiresPasswordChange?: boolean;
   tempPass?: string | null;
   temporaryPassword?: string;

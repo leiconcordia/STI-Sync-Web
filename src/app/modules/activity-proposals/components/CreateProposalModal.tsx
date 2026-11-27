@@ -832,15 +832,19 @@ export default function CreateProposalModal({
 
     if (stepNumber === 5) {
       const isUrgent = Boolean(data.isUrgent);
+      const isAlreadySubmitted =
+        Boolean(data.status) &&
+        !['draft', 'returned', 'returned_for_revision', 'for_revision'].includes(String(data.status));
       const {
-        todayStr,
-        standardMinDate,
+        submissionDateStr,
+        minTaskDate,
         implementationEndDate,
         maxTaskDate,
       } = resolveTaskDateBounds({
         eventDate: data.date,
         sessions: data.sessions,
         isUrgent,
+        submissionDateStr: isAlreadySubmitted ? data.submissionDate : undefined,
       });
 
       if (!data.tasks || data.tasks.length === 0) {
@@ -860,8 +864,10 @@ export default function CreateProposalModal({
             errs.tasks = `Task #${i + 1} (${t.taskName}) is missing a completion date.`;
             break;
           }
-          if (t.completionDate < todayStr) {
-            errs.tasks = `Task #${i + 1} (${t.taskName}) completion date cannot be in the past (earliest allowed: ${todayStr}).`;
+          if (t.completionDate < minTaskDate) {
+            errs.tasks = isUrgent
+              ? `Task #${i + 1} (${t.taskName}) completion date cannot be earlier than the AP submission date (${submissionDateStr}).`
+              : `Task #${i + 1} (${t.taskName}) completion date (${t.completionDate}) must be at least 15 calendar days from AP submission (${minTaskDate} or later).`;
             break;
           }
           if (maxTaskDate && t.completionDate > maxTaskDate) {

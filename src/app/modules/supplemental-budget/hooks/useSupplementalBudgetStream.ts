@@ -9,6 +9,7 @@ import {
   subscribeToSupplementalBudgetRequests,
   subscribeToEventSupplementalBudgets,
 } from '../services/sbr.service';
+import { isSbrDisbursedForLiquidation } from '../utils/sbr-validation.utils';
 import type { SupplementalBudgetRequest } from '../types/sbr.types';
 
 export function useAllSupplementalBudgets() {
@@ -52,14 +53,35 @@ export function useEventSupplementalBudgets(eventId?: string | null) {
     return () => unsub();
   }, [eventId]);
 
+  const approvedRequests = useMemo(
+    () => data.filter((s) => !s.isDeleted && s.status === 'approved'),
+    [data]
+  );
+
+  const disbursedRequests = useMemo(
+    () => approvedRequests.filter((s) => isSbrDisbursedForLiquidation(s)),
+    [approvedRequests]
+  );
+
+  const awaitingReleaseRequests = useMemo(
+    () => approvedRequests.filter((s) => !isSbrDisbursedForLiquidation(s)),
+    [approvedRequests]
+  );
+
   const approvedTotal = useMemo(
     () =>
       Math.round(
-        data
-          .filter((s) => s.status === 'approved')
-          .reduce((sum, s) => sum + (Number(s.requestedAmount) || 0), 0) * 100
+        approvedRequests.reduce((sum, s) => sum + (Number(s.requestedAmount) || 0), 0) * 100
       ) / 100,
-    [data]
+    [approvedRequests]
+  );
+
+  const disbursedTotal = useMemo(
+    () =>
+      Math.round(
+        disbursedRequests.reduce((sum, s) => sum + (Number(s.requestedAmount) || 0), 0) * 100
+      ) / 100,
+    [disbursedRequests]
   );
 
   const pendingRequest = useMemo(
@@ -76,7 +98,10 @@ export function useEventSupplementalBudgets(eventId?: string | null) {
     data,
     loading,
     approvedTotal,
-    approvedRequests: data.filter((s) => s.status === 'approved'),
+    disbursedTotal,
+    approvedRequests,
+    disbursedRequests,
+    awaitingReleaseRequests,
     pendingRequest,
   };
 }

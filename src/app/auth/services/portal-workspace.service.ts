@@ -18,21 +18,97 @@ export function buildPortalWorkspaces(data: { signatories: any[]; advisers: any[
   const owned = (record: any) => record.authUid
     ? record.authUid === identity.uid
     : (record.uid === identity.uid || normalize(record.email) === normalize(identity.email));
+  const isAssignedSubstitute = (record: any) => {
+    const sub = record?.substitute;
+    if (!sub || typeof sub !== 'object') return false;
+    if (record.substituteAuthUid && record.substituteAuthUid === identity.uid) return true;
+    if (sub.authUid && sub.authUid === identity.uid) return true;
+    const subEmail = normalize(record.substituteEmail || sub.email);
+    return Boolean(subEmail && normalize(identity.email) === subEmail);
+  };
   const student = data.students.find((record) => active(record) && owned(record));
   const nonSasSignatories = data.signatories.filter((record) => !isSasSignatoryRecord(record));
-  const needsPasswordChange = [...nonSasSignatories, ...data.advisers, ...data.officers, ...data.students].filter((record) => active(record) && owned(record)).some((record) => record.tempPass || record.requiresPasswordChange || record.requiresChangePassword || record.resetInProgress);
+  const activeSubstituteSignatories = nonSasSignatories.filter(
+    (record) => active(record) && record.portalDeactivated === true && isAssignedSubstitute(record)
+  );
+  const ownedSignatureFallback =
+    [...nonSasSignatories, ...data.advisers]
+      .filter((record) => active(record) && owned(record))
+      .map((record) => record.signatureUrl || record.signatureDataUrl)
+      .find((sig) => typeof sig === 'string' && sig.trim().length > 0) || null;
+  const needsPasswordChange =
+    [...nonSasSignatories, ...data.advisers, ...data.officers, ...data.students]
+      .filter((record) => active(record) && owned(record))
+      .some((record) => record.tempPass || record.requiresPasswordChange || record.requiresChangePassword || record.resetInProgress) ||
+    activeSubstituteSignatories.some((record) => record.substitute?.tempPass || record.substitute?.requiresPasswordChange);
+
   const workspaces: PortalWorkspace[] = [];
   nonSasSignatories.filter((record) => active(record) && owned(record)).forEach((record) => workspaces.push({
-    id: `signatory:${record.id}`, kind: 'signatory', label: 'Institutional Signatory',
-    subtitle: [record.roleTitle || record.role, record.department].filter(Boolean).join(' · ') || undefined,
+    id: `signatory:${record.id}`, kind: 'signatory', label: record.portalDeactivated ? 'Institutional Signatory (On Leave)' : 'Institutional Signatory',
+    subtitle: [record.roleTitle || record.role, record.department, record.portalDeactivated ? 'Portal Deactivated' : ''].filter(Boolean).join(' · ') || undefined,
     path: '/signatory/dashboard', session: {
       id: record.id, uid: record.uid || record.id, authUid: identity.uid, ...structuredNameFields(record), email: identity.email,
       role: record.role, roleTitle: record.roleTitle, actionType: record.actionType, department: record.department || '', departmentId: record.departmentId || '', employeeId: record.employeeId || '',
       applicableScope: record.applicableScope, applicableWorkflows: getSignatoryAuthorizedWorkflows(record),
       canApproveProposal: record.canApproveProposal, canApproveLiquidation: record.canApproveLiquidation, canApprovePar: record.canApprovePar,
-      signatureUrl: record.signatureUrl || record.signatureDataUrl || null, isSignatory: true, requiresPasswordChange: Boolean(needsPasswordChange),
+      signatureUrl: record.signatureUrl || record.signatureDataUrl || null, isSignatory: true,
+      actingAsSubstitute: false,
+      portalDeactivated: Boolean(record.portalDeactivated),
+      portalDeactivatedReason: record.portalDeactivatedReason || null,
+      portalDeactivatedUntil: record.portalDeactivatedUntil || null,
+      substitute: record.substitute || null,
+      substituteEmail: record.substituteEmail || record.substitute?.email || null,
+      requiresPasswordChange: Boolean(needsPasswordChange),
     },
   }));
+
+  // Delegated "Acting Signatory" workspaces (ONLY active while the Primary Signatory's portal is deactivated / on leave)
+  activeSubstituteSignatories.forEach((record) => {
+    const sub = record.substitute || {};
+    const primaryName = formatPersonName(record);
+    const subSig = sub.signatureUrl || sub.signatureDataUrl || ownedSignatureFallback || null;
+    const baseRoleTitle = record.roleTitle || record.role || 'Institutional Signatory';
+    workspaces.push({
+      id: `signatory_sub:${record.id}`,
+      kind: 'signatory',
+      label: `Acting Signatory (for ${primaryName})`,
+      subtitle: [`Acting ${baseRoleTitle}`, record.department].filter(Boolean).join(' · ') || undefined,
+      path: '/signatory/dashboard',
+      session: {
+        id: record.id,
+        uid: identity.uid,
+        authUid: identity.uid,
+        substituteUid: identity.uid,
+        ...structuredNameFields(sub),
+        name: formatPersonName(sub, sub.name || identity.email || 'Substitute Signatory'),
+        email: identity.email || sub.email,
+        role: record.role,
+        roleTitle: `Acting ${baseRoleTitle}`,
+        actionType: record.actionType,
+        department: record.department || '',
+        departmentId: record.departmentId || '',
+        employeeId: sub.employeeId || '',
+        applicableScope: record.applicableScope,
+        applicableWorkflows: getSignatoryAuthorizedWorkflows(record),
+        canApproveProposal: record.canApproveProposal,
+        canApproveLiquidation: record.canApproveLiquidation,
+        canApprovePar: record.canApprovePar,
+        signatureUrl: subSig,
+        signatureDataUrl: subSig,
+        isSignatory: true,
+        actingAsSubstitute: true,
+        delegatedForSignatoryId: record.id,
+        delegatedForSignatoryUid: record.uid || record.id,
+        delegatedForSignatoryName: primaryName,
+        delegatedForSignatoryEmail: record.email || '',
+        delegatedForRoleTitle: baseRoleTitle,
+        portalDeactivated: true,
+        portalDeactivatedReason: record.portalDeactivatedReason || null,
+        portalDeactivatedUntil: record.portalDeactivatedUntil || null,
+        requiresPasswordChange: Boolean(sub.tempPass || sub.requiresPasswordChange || needsPasswordChange),
+      },
+    });
+  });
   for (const [kind, records] of [
     ['adviser', data.advisers],
     [
@@ -89,6 +165,15 @@ export async function loadPortalWorkspaces(): Promise<PortalWorkspace[]> {
     if (trimmedEmail !== lowerEmail) {
       queries.push(getDocs(query(collection(db, name), where('email', '==', trimmedEmail))));
     }
+    if (name === 'institutional_signatories') {
+      queries.push(
+        getDocs(query(collection(db, name), where('substituteEmail', '==', lowerEmail))),
+        getDocs(query(collection(db, name), where('substituteAuthUid', '==', user.uid)))
+      );
+      if (trimmedEmail !== lowerEmail) {
+        queries.push(getDocs(query(collection(db, name), where('substituteEmail', '==', trimmedEmail))));
+      }
+    }
     const snapshots = await Promise.all(queries);
     return [...new Map(snapshots.flatMap((snapshot) => snapshot.docs.map((record) => [record.id, { ...record.data(), id: record.id }] as const))).values()];
   };
@@ -129,7 +214,8 @@ export async function loadPortalWorkspaces(): Promise<PortalWorkspace[]> {
 }
 
 export function hasMultiplePortalKinds(workspaces: PortalWorkspace[]): boolean {
-  return new Set(workspaces.map((workspace) => workspace.kind)).size > 1;
+  if (new Set(workspaces.map((workspace) => workspace.kind)).size > 1) return true;
+  return workspaces.length > 1 && workspaces.some((workspace) => workspace.id.startsWith('signatory_sub:'));
 }
 
 export function readStoredPortalWorkspaces(): PortalWorkspace[] {

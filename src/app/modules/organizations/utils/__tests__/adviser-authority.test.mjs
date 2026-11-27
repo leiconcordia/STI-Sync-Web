@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import {
   isPrimaryAdviserUnavailable,
   resolveEffectiveAdviserAuthority,
+  validateAdviserPortalInactivation,
+  validateRemoveCoAdviser,
 } from '../adviser-authority.utils.ts';
 import {
   findAdviserConflictInOrganizations,
@@ -30,10 +32,11 @@ const coAdv = {
   title: 'Club Co-Adviser',
 };
 
-test('1. Both Primary Adviser and Co-Adviser always hold equal full Club Adviser authority', () => {
+test('1. While Primary Adviser is Active, ONLY Primary can approve and Substitute/Co-Adviser is strictly blocked', () => {
   const org = {
     adviser: primaryAdv,
     coAdviser: coAdv,
+    adviserAvailability: { primaryStatus: 'available' },
   };
 
   const primaryAuth = resolveEffectiveAdviserAuthority({
@@ -51,12 +54,12 @@ test('1. Both Primary Adviser and Co-Adviser always hold equal full Club Adviser
     viewerEmail: coAdv.email,
   });
   assert.equal(coAuth.isCoAdviser, true);
-  assert.equal(coAuth.canReviewOfficerSubmissions, true);
-  assert.equal(coAuth.canPerformFullAdviserActions, true);
-  assert.match(coAuth.statusBannerText || '', /full Club Adviser authority/i);
+  assert.equal(coAuth.canReviewOfficerSubmissions, false);
+  assert.equal(coAuth.canPerformFullAdviserActions, false);
+  assert.match(coAuth.approvalBlockedReason || '', /cannot approve/i);
 });
 
-test('2. Co-Adviser retains acting-on-behalf attribution if availability metadata exists', () => {
+test('2. Once Primary Adviser sets Portal Inactive, approval authority transfers to Substitute/Co-Adviser and Primary is paused', () => {
   const org = {
     adviser: primaryAdv,
     coAdviser: coAdv,
@@ -66,19 +69,69 @@ test('2. Co-Adviser retains acting-on-behalf attribution if availability metadat
     },
   };
 
+  const primaryAuth = resolveEffectiveAdviserAuthority({
+    organization: org,
+    viewerUid: 'uid-primary',
+    viewerEmail: primaryAdv.email,
+  });
+  assert.equal(primaryAuth.isPrimaryAdviser, true);
+  assert.equal(primaryAuth.isPrimaryUnavailable, true);
+  assert.equal(primaryAuth.canReviewOfficerSubmissions, false);
+  assert.equal(primaryAuth.canPerformFullAdviserActions, false);
+
   const coAuth = resolveEffectiveAdviserAuthority({
     organization: org,
     viewerUid: 'uid-coadv',
     viewerEmail: coAdv.email,
   });
-
   assert.equal(coAuth.isCoAdviser, true);
+  assert.equal(coAuth.isAuthorityTransferredToCoAdviser, true);
   assert.equal(coAuth.canReviewOfficerSubmissions, true);
   assert.equal(coAuth.canPerformFullAdviserActions, true);
   assert.equal(coAuth.actingOnBehalfOfName, primaryAdv.name);
 });
 
-test('3. Scheduled leave date range auto-transfers during window and auto-restores after end date', () => {
+test('3. validateAdviserPortalInactivation blocks going inactive when pending documents exist without a Substitute', () => {
+  const blocked = validateAdviserPortalInactivation({
+    hasCoAdviser: false,
+    pendingDocuments: [
+      { id: 'ap-1', documentType: 'proposal', title: 'Tech Summit' },
+      { id: 'sbr-1', documentType: 'sbr', title: 'Tech Summit SBR' },
+    ],
+  });
+  assert.equal(blocked.allowed, false);
+  assert.equal(blocked.pendingCount, 2);
+  assert.match(blocked.reason || '', /cannot set your Adviser Portal to Inactive/i);
+
+  const allowedWithSub = validateAdviserPortalInactivation({
+    hasCoAdviser: true,
+    pendingDocuments: [{ id: 'ap-1', documentType: 'proposal', title: 'Tech Summit' }],
+  });
+  assert.equal(allowedWithSub.allowed, true);
+
+  const allowedWithoutPendings = validateAdviserPortalInactivation({
+    hasCoAdviser: false,
+    pendingDocuments: [],
+  });
+  assert.equal(allowedWithoutPendings.allowed, true);
+});
+
+test('4. validateRemoveCoAdviser blocks removing Substitute while Primary is Inactive with pending documents', () => {
+  const blocked = validateRemoveCoAdviser({
+    primaryUnavailable: true,
+    pendingDocuments: [{ id: 'fl-1', documentType: 'liquidation' }],
+  });
+  assert.equal(blocked.allowed, false);
+  assert.match(blocked.reason || '', /Cannot remove the Substitute/i);
+
+  const allowedWhenActive = validateRemoveCoAdviser({
+    primaryUnavailable: false,
+    pendingDocuments: [{ id: 'fl-1', documentType: 'liquidation' }],
+  });
+  assert.equal(allowedWhenActive.allowed, true);
+});
+
+test('5. Legacy scheduled leave date range still evaluates cleanly', () => {
   const availability = {
     primaryStatus: 'unavailable',
     unavailableFrom: '2026-11-20',
@@ -92,7 +145,7 @@ test('3. Scheduled leave date range auto-transfers during window and auto-restor
   assert.equal(isPrimaryAdviserUnavailable(availability, new Date('2026-11-26T08:00:00')), false);
 });
 
-test('4. Uniqueness validation enforces 1-org rule across Primary Adviser & Co-Adviser and prevents same-org self-collision', () => {
+test('6. Uniqueness validation enforces 1-org rule across Primary Adviser & Co-Adviser and prevents same-org self-collision', () => {
   const orgs = [
     {
       id: 'org-1',
@@ -102,7 +155,6 @@ test('4. Uniqueness validation enforces 1-org rule across Primary Adviser & Co-A
     },
   ];
 
-  // Cross-org conflict with existing Co-Adviser
   const crossConflict = findAdviserConflictInOrganizations({
     email: coAdv.email,
     employeeId: coAdv.employeeId,
@@ -112,7 +164,6 @@ test('4. Uniqueness validation enforces 1-org rule across Primary Adviser & Co-A
   assert.ok(crossConflict);
   assert.equal(crossConflict.field, 'email');
 
-  // Same-org conflict: cannot assign org-1's Primary Adviser as org-1's Co-Adviser
   const sameOrgSlotConflict = findAdviserConflictInOrganizations({
     email: primaryAdv.email,
     employeeId: primaryAdv.employeeId,
@@ -123,7 +174,6 @@ test('4. Uniqueness validation enforces 1-org rule across Primary Adviser & Co-A
   assert.ok(sameOrgSlotConflict);
   assert.equal(sameOrgSlotConflict.field, 'email');
 
-  // Updating org-1's Co-Adviser slot with a fresh employee succeeds
   const cleanAssign = findAdviserConflictInOrganizations({
     email: 'fresh@ormoc.sti.edu.ph',
     employeeId: 'EMP-9999',
@@ -133,7 +183,6 @@ test('4. Uniqueness validation enforces 1-org rule across Primary Adviser & Co-A
   });
   assert.equal(cleanAssign, null);
 
-  // Firestore record-level check also respects excludeRole
   const recordConflict = validateAdviserRecordsConflict({
     email: primaryAdv.email,
     employeeId: primaryAdv.employeeId,

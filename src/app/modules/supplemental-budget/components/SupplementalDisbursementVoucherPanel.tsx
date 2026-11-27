@@ -60,13 +60,11 @@ function SingleSbrVoucherCard({
   const existing = sbr.disbursementVoucher;
   const isOrgFunds = sbr.fundingSource === 'organization_funds';
   const isLocked = Boolean(existing) || isLiquidationLocked || !canManage;
+  const todayStr = getTodayDate();
 
-  const [mode, setMode] = useState<'separate' | 'bundled_with_primary'>(
-    existing?.mode || 'separate'
-  );
   const [chequeNumber, setChequeNumber] = useState(existing?.chequeNumber || '');
   const [voucherNumber, setVoucherNumber] = useState(existing?.voucherNumber || '');
-  const [releaseDate, setReleaseDate] = useState(existing?.releaseDate || getTodayDate());
+  const [releaseDate, setReleaseDate] = useState(existing?.releaseDate || todayStr);
   const [notes, setNotes] = useState(existing?.notes || '');
   const [attachmentUrl, setAttachmentUrl] = useState(existing?.attachmentUrl || '');
   const [fileName, setFileName] = useState(existing?.fileName || '');
@@ -83,8 +81,12 @@ function SingleSbrVoucherCard({
     }
     setUploading(true);
     try {
-      const res = await uploadToCloudinary(file, 'sti_sync_supplemental_vouchers');
-      setAttachmentUrl(res.secure_url);
+      const res = await uploadToCloudinary(file, {
+        folder: 'disbursements/supplemental-vouchers',
+        acceptedTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'],
+        maxBytes: 10 * 1024 * 1024,
+      });
+      setAttachmentUrl(res.secureUrl);
       setFileName(file.name);
       toast.success(`Uploaded ${file.name}`);
     } catch (err: any) {
@@ -96,15 +98,21 @@ function SingleSbrVoucherCard({
   };
 
   const handleCommit = async () => {
-    if (mode === 'separate') {
-      if (!chequeNumber.trim() && !voucherNumber.trim()) {
-        toast.error('Please enter a Cheque # or Voucher # for this supplemental disbursement.');
-        return;
-      }
-      if (!attachmentUrl) {
-        toast.error('Please upload the official Supplemental Disbursement Voucher copy.');
-        return;
-      }
+    if (!chequeNumber.trim() && !voucherNumber.trim()) {
+      toast.error('Please enter a Cheque # or Voucher # for this supplemental disbursement.');
+      return;
+    }
+    if (!releaseDate) {
+      toast.error('Please select the Date Released / Disbursed.');
+      return;
+    }
+    if (releaseDate > todayStr) {
+      toast.error('Date Released cannot be in the future. Please select today or an earlier date.');
+      return;
+    }
+    if (!attachmentUrl) {
+      toast.error('Please upload the official Supplemental Disbursement Voucher copy.');
+      return;
     }
 
     setSaving(true);
@@ -112,21 +120,19 @@ function SingleSbrVoucherCard({
       await attachSupplementalDisbursementVoucher(
         sbr.id,
         {
-          mode,
-          chequeNumber: mode === 'separate' ? chequeNumber.trim() : undefined,
-          voucherNumber: mode === 'separate' ? voucherNumber.trim() || undefined : undefined,
-          releaseDate: mode === 'separate' ? releaseDate : undefined,
-          attachmentUrl: mode === 'separate' ? attachmentUrl : undefined,
-          fileName: mode === 'separate' ? fileName : undefined,
+          mode: 'separate',
+          chequeNumber: chequeNumber.trim(),
+          voucherNumber: voucherNumber.trim() || undefined,
+          releaseDate,
+          attachmentUrl,
+          fileName,
           notes: notes.trim() || undefined,
           disbursedAmount: sbr.requestedAmount,
         },
         actor
       );
       toast.success(
-        mode === 'bundled_with_primary'
-          ? `${sbr.referenceCode} marked as bundled with Primary Event Voucher.`
-          : `Supplemental Disbursement Voucher attached for ${sbr.referenceCode}.`
+        `Supplemental Disbursement Voucher attached for ${sbr.referenceCode}! Funds deducted and reflected in Financial Liquidation.`
       );
       setConfirming(false);
     } catch (err: any) {
@@ -264,117 +270,101 @@ function SingleSbrVoucherCard({
         </div>
       ) : (
         <div className="space-y-3 pt-1">
-          {/* Mode selector */}
-          <div className="flex flex-wrap gap-4 text-[11px]">
-            <label className="inline-flex items-center gap-1.5 cursor-pointer font-semibold text-slate-800">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                Cheque / Ref # *
+              </label>
               <input
-                type="radio"
-                name={`sbr_voucher_mode_${sbr.id}`}
-                checked={mode === 'separate'}
-                onChange={() => setMode('separate')}
+                type="text"
+                value={chequeNumber}
+                onChange={(e) => setChequeNumber(e.target.value)}
+                placeholder="e.g. CHK-2026-0192"
+                className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white focus:border-[#001A4D] focus:outline-none"
               />
-              Separate Supplemental Cheque / Voucher
-            </label>
-            <label className="inline-flex items-center gap-1.5 cursor-pointer font-semibold text-slate-800">
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                Voucher # (Optional)
+              </label>
               <input
-                type="radio"
-                name={`sbr_voucher_mode_${sbr.id}`}
-                checked={mode === 'bundled_with_primary'}
-                onChange={() => setMode('bundled_with_primary')}
+                type="text"
+                value={voucherNumber}
+                onChange={(e) => setVoucherNumber(e.target.value)}
+                placeholder="e.g. DV-2026-044"
+                className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white focus:border-[#001A4D] focus:outline-none"
               />
-              Bundled with Primary Event Voucher
-            </label>
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                Date Released *
+              </label>
+              <input
+                type="date"
+                max={todayStr}
+                value={releaseDate}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val > todayStr) {
+                    toast.error('Date Released cannot be in the future. Please select today or an earlier date.');
+                    setReleaseDate(todayStr);
+                  } else {
+                    setReleaseDate(val);
+                  }
+                }}
+                className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white focus:border-[#001A4D] focus:outline-none"
+              />
+              <span className="text-[10px] text-slate-400">Future dates banned (Today or earlier only)</span>
+            </div>
           </div>
 
-          {mode === 'separate' && (
-            <>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                    Cheque / Ref # *
-                  </label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 items-end">
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                Supplemental Amount Disbursed (Locked)
+              </label>
+              <input
+                type="text"
+                readOnly
+                disabled
+                value={formatCurrency(sbr.requestedAmount)}
+                className="w-full px-3 py-2 text-xs font-mono font-bold rounded-lg border border-slate-200 bg-slate-100 text-slate-700 cursor-not-allowed"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                Official Voucher Scan (Image / PDF) *
+              </label>
+              <div className="flex items-center gap-2">
+                <label className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-[#001A4D]/40 bg-white hover:bg-blue-50 text-[#001A4D] font-bold cursor-pointer truncate">
+                  {uploading ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                  ) : (
+                    <Upload className="w-3.5 h-3.5 shrink-0" />
+                  )}
+                  <span className="truncate">{fileName || 'Upload Voucher Copy'}</span>
                   <input
-                    type="text"
-                    value={chequeNumber}
-                    onChange={(e) => setChequeNumber(e.target.value)}
-                    placeholder="e.g. CHK-2026-0192"
-                    className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white focus:border-[#001A4D] focus:outline-none"
+                    type="file"
+                    accept="image/*,.pdf"
+                    onChange={handleUpload}
+                    disabled={uploading}
+                    className="hidden"
                   />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                    Voucher # (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    value={voucherNumber}
-                    onChange={(e) => setVoucherNumber(e.target.value)}
-                    placeholder="e.g. DV-2026-044"
-                    className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white focus:border-[#001A4D] focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                    Date Released *
-                  </label>
-                  <input
-                    type="date"
-                    value={releaseDate}
-                    onChange={(e) => setReleaseDate(e.target.value)}
-                    className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white focus:border-[#001A4D] focus:outline-none"
-                  />
-                </div>
+                </label>
+                {attachmentUrl && (
+                  <a
+                    href={attachmentUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="p-2 rounded-lg bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
+                    title="Preview uploaded voucher"
+                  >
+                    <Eye className="w-4 h-4" />
+                  </a>
+                )}
               </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 items-end">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                    Supplemental Amount Disbursed (Locked)
-                  </label>
-                  <input
-                    type="text"
-                    readOnly
-                    disabled
-                    value={formatCurrency(sbr.requestedAmount)}
-                    className="w-full px-3 py-2 text-xs font-mono font-bold rounded-lg border border-slate-200 bg-slate-100 text-slate-700 cursor-not-allowed"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                    Official Voucher Scan (Image / PDF) *
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <label className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-[#001A4D]/40 bg-white hover:bg-blue-50 text-[#001A4D] font-bold cursor-pointer truncate">
-                      {uploading ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
-                      ) : (
-                        <Upload className="w-3.5 h-3.5 shrink-0" />
-                      )}
-                      <span className="truncate">{fileName || 'Upload Voucher Copy'}</span>
-                      <input
-                        type="file"
-                        accept="image/*,.pdf"
-                        onChange={handleUpload}
-                        disabled={uploading}
-                        className="hidden"
-                      />
-                    </label>
-                    {attachmentUrl && (
-                      <a
-                        href={attachmentUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="p-2 rounded-lg bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
-                        title="Preview uploaded voucher"
-                      >
-                        <Eye className="w-4 h-4" />
-                      </a>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </>
-          )}
+            </div>
+          </div>
 
           <input
             type="text"
@@ -388,7 +378,7 @@ function SingleSbrVoucherCard({
             <div className="p-3 rounded-lg bg-amber-100/80 border border-amber-300 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <span className="text-[11px] font-semibold text-amber-950 flex items-center gap-1.5">
                 <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
-                Permanent action: Once attached, this Supplemental Voucher is locked. Confirm?
+                Permanent action: Confirming will lock this Supplemental Voucher, deduct the Misc Fee / Retained Fund allocation, and reflect the supplemental funds in Financial Liquidation. Confirm?
               </span>
               <div className="flex items-center gap-2 shrink-0">
                 <button
@@ -406,7 +396,7 @@ function SingleSbrVoucherCard({
                   className="px-3 py-1.5 rounded-lg bg-[#001A4D] text-[#FFD41C] font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                 >
                   {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileCheck className="w-3.5 h-3.5" />}
-                  Confirm &amp; Attach
+                  Confirm &amp; Deduct
                 </button>
               </div>
             </div>
@@ -419,9 +409,7 @@ function SingleSbrVoucherCard({
                 className="px-4 py-2 rounded-xl bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C] font-bold text-xs inline-flex items-center gap-1.5 shadow-xs cursor-pointer disabled:opacity-50"
               >
                 <FileCheck className="w-3.5 h-3.5" />
-                {mode === 'bundled_with_primary'
-                  ? 'Mark Bundled with Primary Voucher'
-                  : 'Attach Supplemental Voucher'}
+                Attach Supplemental Voucher &amp; Deduct Funds
               </button>
             </div>
           )}

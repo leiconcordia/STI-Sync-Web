@@ -31,6 +31,7 @@ import {
   Ban,
   Lock,
   Loader2,
+  UserCog,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -49,6 +50,7 @@ import {
 } from '../../../modules/signatories/services/signatory-validation.service';
 import { DeactivationBlockModal } from './signatories/DeactivationBlockModal';
 import { AuthorityConflictModal } from './signatories/AuthorityConflictModal';
+import { ManageSignatorySubstituteModal } from '../../../modules/signatories/components/ManageSignatorySubstituteModal';
 import {
   SIGNATORY_ROLES,
   type InstitutionalSignatory,
@@ -171,6 +173,7 @@ export default function InstitutionalSignatoryManagement() {
   // Modals for Signatories
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingSignatory, setEditingSignatory] = useState<InstitutionalSignatory | null>(null);
+  const [substituteTarget, setSubstituteTarget] = useState<InstitutionalSignatory | null>(null);
   const [previewSignatureUrl, setPreviewSignatureUrl] = useState<string | null>(null);
   const [credentialsSuccess, setCredentialsSuccess] = useState<{
     name: string;
@@ -1135,6 +1138,12 @@ export default function InstitutionalSignatoryManagement() {
                             <Mail className="w-3 h-3 text-gray-400" />
                             {sig.email}
                           </div>
+                          {sig.substitute?.name && (
+                            <div className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-800 border border-indigo-200 text-[10px] font-bold">
+                              <UserCog className="w-3 h-3 text-indigo-600" />
+                              <span>Sub: {sig.substitute.name}</span>
+                            </div>
+                          )}
                         </div>
                       </div>
                     </td>
@@ -1224,25 +1233,42 @@ export default function InstitutionalSignatoryManagement() {
 
                     {/* Status */}
                     <td className="py-3.5 px-4">
-                      <span
-                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold ${
-                          sig.isActive
-                            ? 'bg-green-100 text-green-800'
-                            : 'bg-gray-100 text-gray-600'
-                        }`}
-                      >
+                      <div className="flex flex-col items-start gap-1">
                         <span
-                          className={`w-1.5 h-1.5 rounded-full ${
-                            sig.isActive ? 'bg-green-600' : 'bg-gray-400'
+                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold ${
+                            sig.isActive
+                              ? 'bg-green-100 text-green-800'
+                              : 'bg-gray-100 text-gray-600'
                           }`}
-                        />
-                        {sig.isActive ? 'Active' : 'Inactive'}
-                      </span>
+                        >
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              sig.isActive ? 'bg-green-600' : 'bg-gray-400'
+                            }`}
+                          />
+                          {sig.isActive ? 'Active' : 'Inactive'}
+                        </span>
+                        {sig.portalDeactivated && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                            On Leave{sig.substitute?.name ? ' • Sub Active' : ''}
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     {/* Actions */}
                     <td className="py-3.5 px-4 text-right">
                       <div className="inline-flex items-center gap-1.5">
+                        {/* Manage Substitute & Leave */}
+                        <button
+                          onClick={() => setSubstituteTarget(sig)}
+                          title="Assign / Manage Substitute Signatory & Leave Mode"
+                          className="inline-flex items-center gap-1 px-2 py-1 hover:bg-indigo-50 text-indigo-700 border border-indigo-200/80 rounded-lg text-[11px] font-bold transition-colors cursor-pointer"
+                        >
+                          <UserCog className="w-3.5 h-3.5" />
+                          <span>Sub</span>
+                        </button>
+
                         {/* Edit */}
                         <button
                           onClick={() => handleOpenEditModal(sig)}
@@ -2238,6 +2264,20 @@ export default function InstitutionalSignatoryManagement() {
         if (result.delivery === 'accepted') toast.success('Password reset completed; email accepted by the provider.');
         else toast.warning('Password reset completed, but email failed. Copy the active temporary password in the reset window.');
       }} />}
+
+      {/* ── MODAL: Manage Substitute Signatory & Leave Delegation ── */}
+      {substituteTarget && (
+        <ManageSignatorySubstituteModal
+          isOpen={Boolean(substituteTarget)}
+          onClose={() => setSubstituteTarget(null)}
+          signatory={substituteTarget}
+          actor={{
+            uid: profile?.uid || 'sas_admin',
+            name: profile?.displayName || profile?.email || 'SAS Administrator',
+            role: 'admin',
+          }}
+        />
+      )}
     </div>
   );
 }

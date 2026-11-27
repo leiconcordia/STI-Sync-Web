@@ -24,6 +24,7 @@ import {
   Loader2,
   Coins,
   Building2,
+  Lock,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import StepReturnRevisionModal, { type ReturnStepItem } from './StepReturnRevisionModal';
@@ -99,6 +100,8 @@ export default function ClubAdviserDecisionPanel({
       ? 'Post-Activity Report'
       : documentType === 'FL'
       ? 'Financial Liquidation'
+      : documentType === 'SBR'
+      ? 'Supplemental Budget Request'
       : 'Activity Proposal';
 
   // Modal states
@@ -381,47 +384,64 @@ export default function ClubAdviserDecisionPanel({
               </div>
             </div>
 
-            {/* 3 Decision Buttons (No Request Clarification) */}
-            <div
-              className={
-                layout === 'inline'
-                  ? 'grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1'
-                  : 'space-y-2.5 pt-1'
-              }
-            >
-              <button
-                type="button"
-                onClick={() => {
-                  setIsDrawingMode(!registeredSigUrl);
-                  setShowApproveModal(true);
-                }}
-                disabled={submitting}
-                className="w-full h-11 px-4 flex items-center justify-center gap-2 text-white font-bold text-xs rounded-xl transition-all shadow-xs cursor-pointer bg-gradient-to-r from-[#22C55E] to-[#16A34A] hover:from-[#16A34A] hover:to-[#15803D] disabled:opacity-50"
+            {/* 3 Decision Buttons — Strictly Locked unless Viewer holds Active Adviser Authority */}
+            {adviserAuthority.canReviewOfficerSubmissions ? (
+              <div
+                className={
+                  layout === 'inline'
+                    ? 'grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1'
+                    : 'space-y-2.5 pt-1'
+                }
               >
-                <Send className="w-4 h-4" />
-                <span>Approve &amp; Forward</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsDrawingMode(!registeredSigUrl);
+                    setShowApproveModal(true);
+                  }}
+                  disabled={submitting}
+                  className="w-full h-11 px-4 flex items-center justify-center gap-2 text-white font-bold text-xs rounded-xl transition-all shadow-xs cursor-pointer bg-gradient-to-r from-[#22C55E] to-[#16A34A] hover:from-[#16A34A] hover:to-[#15803D] disabled:opacity-50"
+                >
+                  <Send className="w-4 h-4" />
+                  <span>Approve &amp; Forward</span>
+                </button>
 
-              <button
-                type="button"
-                onClick={() => setShowReturnModal(true)}
-                disabled={submitting}
-                className="w-full h-11 px-4 flex items-center justify-center gap-2 bg-[#FFC107] text-[#001A4D] font-bold text-xs rounded-xl hover:bg-[#F59E0B] transition-colors shadow-xs cursor-pointer disabled:opacity-50"
-              >
-                <RotateCcw className="w-4 h-4" />
-                <span>Return for Revision</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setShowReturnModal(true)}
+                  disabled={submitting}
+                  className="w-full h-11 px-4 flex items-center justify-center gap-2 bg-[#FFC107] text-[#001A4D] font-bold text-xs rounded-xl hover:bg-[#F59E0B] transition-colors shadow-xs cursor-pointer disabled:opacity-50"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  <span>Return for Revision</span>
+                </button>
 
-              <button
-                type="button"
-                onClick={() => setShowRejectModal(true)}
-                disabled={submitting}
-                className="w-full h-11 px-4 flex items-center justify-center gap-2 bg-white border border-[#EF4444] text-[#EF4444] font-bold text-xs rounded-xl hover:bg-red-50 transition-colors cursor-pointer disabled:opacity-50"
-              >
-                <XCircle className="w-4 h-4" />
-                <span>Reject {documentType === 'AP' ? 'Proposal' : 'Report'}</span>
-              </button>
-            </div>
+                <button
+                  type="button"
+                  onClick={() => setShowRejectModal(true)}
+                  disabled={submitting}
+                  className="w-full h-11 px-4 flex items-center justify-center gap-2 bg-white border border-[#EF4444] text-[#EF4444] font-bold text-xs rounded-xl hover:bg-red-50 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  <XCircle className="w-4 h-4" />
+                  <span>Reject {documentType === 'AP' ? 'Proposal' : documentType === 'SBR' ? 'Request' : 'Report'}</span>
+                </button>
+              </div>
+            ) : (
+              <div className="p-4 rounded-xl bg-slate-100 border-2 border-slate-300 text-slate-800 space-y-1.5">
+                <div className="flex items-center gap-2 text-xs font-black uppercase tracking-wider text-slate-700">
+                  <Lock className="w-4 h-4 text-slate-600 shrink-0" />
+                  <span>
+                    {adviserAuthority.isCoAdviser
+                      ? 'Approvals Locked — Primary Adviser Active'
+                      : 'Approvals Paused — Adviser Portal Inactive'}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  {adviserAuthority.approvalBlockedReason ||
+                    'Approval authority is not currently active for your account.'}
+                </p>
+              </div>
+            )}
           </div>
         ) : isForAdviserReview && !isAdviser ? (
           /* 2. OFFICER VIEW WHILE AWAITING CLUB ADVISER */

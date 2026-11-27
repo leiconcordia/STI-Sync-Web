@@ -13,6 +13,7 @@ import {
   query,
   where,
   getDocs,
+  getDocsFromCache,
   doc,
   updateDoc,
   writeBatch,
@@ -32,7 +33,29 @@ import type {
   InstitutionalSignatory,
   WorkflowDocumentType,
 } from '../types/signatory.types';
+import {
+  validateSignatoryPortalDeactivation,
+  validateRemoveSignatorySubstitute,
+} from '../utils/signatory-substitute.utils';
+import type {
+  SignatoryDeactivationValidationResult,
+  SignatoryRemoveSubstituteValidationResult,
+} from '../utils/signatory-substitute.utils';
 import { DocumentAuthorityLevel } from '../../../admin/components/settings/InstitutionalSignatoryManagement';
+
+export { validateSignatoryPortalDeactivation, validateRemoveSignatorySubstitute };
+export type { SignatoryDeactivationValidationResult, SignatoryRemoveSubstituteValidationResult };
+
+async function getDocsQuotaSafe(q: any) {
+  try {
+    return await getDocs(q);
+  } catch (err: any) {
+    if (err?.code === 'resource-exhausted' || String(err?.message || '').toLowerCase().includes('quota')) {
+      return await getDocsFromCache(q);
+    }
+    throw err;
+  }
+}
 
 export interface AssignedPipelineInfo {
   pipelineKey: WorkflowPipelineKey;
@@ -48,7 +71,7 @@ export interface AssignedPipelineInfo {
 
 export interface PendingDocumentInfo {
   id: string;
-  documentType: WorkflowDocumentType;
+  documentType: WorkflowDocumentType | 'sbr';
   title: string;
   code?: string;
   organizationName?: string;
@@ -122,15 +145,16 @@ export async function getSignatoryWorkflowAssignments(
 }
 
 /**
- * Scan active in-flight documents (proposals, liquidations, PARs)
+ * Scan active in-flight documents (proposals, supplemental budget requests, liquidations, PARs)
  * for pending approval steps belonging to this signatory.
  */
 export async function getSignatoryPendingDocuments(
   signatoryId: string,
   signatoryEmail?: string,
-  documentTypeFilter?: WorkflowDocumentType
+  documentTypeFilter?: WorkflowDocumentType | 'sbr'
 ): Promise<PendingDocumentInfo[]> {
   const pendingDocs: PendingDocumentInfo[] = [];
+  const seenKeys = new Set<string>();
   const cleanEmail = (signatoryEmail || '').trim().toLowerCase();
 
   const matchesStep = (step: any) => {
@@ -142,48 +166,119 @@ export async function getSignatoryPendingDocuments(
 
   const isStepPending = (step: any) => {
     const s = String(step.status || '').toLowerCase();
-    return s !== 'endorsed' && s !== 'approved' && s !== 'waived' && s !== 'rejected';
+    return s !== 'endorsed' && s !== 'approved' && s !== 'waived' && s !== 'rejected' && s !== 'returned' && s !== 'returned_for_revision';
+  };
+
+  const pushUnique = (item: PendingDocumentInfo) => {
+    const key = `${item.documentType}:${item.id}:${item.stepStageIndex}`;
+    if (seenKeys.has(key)) return;
+    seenKeys.add(key);
+    pendingDocs.push(item);
   };
 
   try {
-    // 1. Scan Activity Proposals
+    // 1. Scan Activity Proposals (live 'activities' collection + legacy 'activity_proposals')
     if (!documentTypeFilter || documentTypeFilter === 'proposal') {
-      const proposalsSnap = await getDocs(
-        query(
-          collection(db, 'activity_proposals'),
-          where('status', 'in', ['under_review', 'pending', 'pending_review'])
-        )
-      );
+      const proposalCollections = ['activities', 'activity_proposals'];
+      for (const colName of proposalCollections) {
+        try {
+          const proposalsSnap = await getDocsQuotaSafe(
+            query(
+              collection(db, colName),
+              where('status', 'in', ['under_review', 'pending', 'pending_review'])
+            )
+          );
 
-      proposalsSnap.docs.forEach((docSnap) => {
-        const data = docSnap.data();
-        const chain = data.approvalChain || [];
-        const curStage = data.currentStageIndex ?? 1;
+          proposalsSnap.docs.forEach((docSnap) => {
+            const data = docSnap.data();
+            if (
+              data.isDeleted === true ||
+              data.isReturned === true ||
+              data.isPendingSasVetting === true ||
+              ['draft', 'for_adviser_review', 'for_revision', 'returned', 'returned_for_revision', 'rejected', 'approved_president', 'approved', 'voided', 'deleted'].includes(
+                String(data.proposalStatus || data.lifecycleStatus || '').toLowerCase()
+              )
+            ) {
+              return;
+            }
+            const chain = data.approvalChain || [];
+            const curStage = data.currentStageIndex ?? 1;
 
-        chain.forEach((step: any) => {
-          if (matchesStep(step) && isStepPending(step)) {
-            const stepStage = step.stageIndex ?? 1;
-            const isCurrent = stepStage === curStage;
-            pendingDocs.push({
-              id: docSnap.id,
-              documentType: 'proposal',
-              title: data.title || data.eventName || 'Untitled Proposal',
-              code: data.proposalCode || data.code || 'Proposal',
-              organizationName: data.organizationName || data.hostingOrgId || 'Organization',
-              currentStageIndex: curStage,
-              stepStageIndex: stepStage,
-              stepStageName: step.stageName || `Stage ${stepStage}`,
-              isCurrentTurn: isCurrent,
-              status: data.status || 'under_review',
+            chain.forEach((step: any) => {
+              if (matchesStep(step) && isStepPending(step)) {
+                const stepStage = step.stageIndex ?? 1;
+                const isCurrent = stepStage === curStage;
+                pushUnique({
+                  id: docSnap.id,
+                  documentType: 'proposal',
+                  title: data.title || data.eventName || 'Untitled Proposal',
+                  code: data.proposalCode || data.code || 'Proposal',
+                  organizationName: data.organizationName || data.hostingOrgId || 'Organization',
+                  currentStageIndex: curStage,
+                  stepStageIndex: stepStage,
+                  stepStageName: step.stageName || `Stage ${stepStage}`,
+                  isCurrentTurn: isCurrent,
+                  status: data.status || 'under_review',
+                });
+              }
             });
+          });
+        } catch (colErr) {
+          console.warn(`[getSignatoryPendingDocuments] Warning scanning ${colName}:`, colErr);
+        }
+      }
+    }
+
+    // 1b. Scan Supplemental Budget Requests (School Budget / Institutional Signatories)
+    if (!documentTypeFilter || documentTypeFilter === 'sbr' || documentTypeFilter === 'proposal') {
+      try {
+        const sbrSnap = await getDocsQuotaSafe(
+          query(
+            collection(db, 'supplemental_budget_requests'),
+            where('status', '==', 'pending_signatories')
+          )
+        );
+
+        sbrSnap.docs.forEach((docSnap) => {
+          const data = docSnap.data();
+          if (
+            data.isDeleted === true ||
+            data.isReturned === true ||
+            data.isPendingSasVetting === true ||
+            data.requiresSignatories === false
+          ) {
+            return;
           }
+          const chain = data.approvalChain || [];
+          const curStage = data.currentStageIndex ?? 1;
+
+          chain.forEach((step: any) => {
+            if (matchesStep(step) && isStepPending(step)) {
+              const stepStage = step.stageIndex ?? 1;
+              const isCurrent = stepStage === curStage;
+              pushUnique({
+                id: docSnap.id,
+                documentType: 'sbr',
+                title: data.eventTitle || data.title || 'Supplemental Budget Request',
+                code: data.sbrCode || data.code || 'SBR',
+                organizationName: data.organizationName || 'Organization',
+                currentStageIndex: curStage,
+                stepStageIndex: stepStage,
+                stepStageName: step.stageName || `Stage ${stepStage}`,
+                isCurrentTurn: isCurrent,
+                status: data.status || 'pending_signatories',
+              });
+            }
+          });
         });
-      });
+      } catch (sbrErr) {
+        console.warn('[getSignatoryPendingDocuments] Warning scanning supplemental_budget_requests:', sbrErr);
+      }
     }
 
     // 2. Scan Financial Liquidations
     if (!documentTypeFilter || documentTypeFilter === 'liquidation') {
-      const liquidationsSnap = await getDocs(
+      const liquidationsSnap = await getDocsQuotaSafe(
         query(
           collection(db, 'financial_liquidations'),
           where('status', 'in', ['under_review', 'pending', 'pending_review'])
@@ -192,6 +287,9 @@ export async function getSignatoryPendingDocuments(
 
       liquidationsSnap.docs.forEach((docSnap) => {
         const data = docSnap.data();
+        if (data.isDeleted === true || data.isReturned === true || data.isPendingSasVetting === true) {
+          return;
+        }
         const chain = data.approvalChain || [];
         const curStage = data.currentStageIndex ?? 1;
 
@@ -199,7 +297,7 @@ export async function getSignatoryPendingDocuments(
           if (matchesStep(step) && isStepPending(step)) {
             const stepStage = step.stageIndex ?? 1;
             const isCurrent = stepStage === curStage;
-            pendingDocs.push({
+            pushUnique({
               id: docSnap.id,
               documentType: 'liquidation',
               title: data.eventTitle || data.eventName || data.title || 'Untitled Liquidation',
@@ -218,7 +316,7 @@ export async function getSignatoryPendingDocuments(
 
     // 3. Scan Post-Activity Reports (PAR)
     if (!documentTypeFilter || documentTypeFilter === 'par') {
-      const parSnap = await getDocs(
+      const parSnap = await getDocsQuotaSafe(
         query(
           collection(db, 'post_activity_reports'),
           where('status', 'in', ['under_review', 'pending', 'pending_review'])
@@ -227,6 +325,9 @@ export async function getSignatoryPendingDocuments(
 
       parSnap.docs.forEach((docSnap) => {
         const data = docSnap.data();
+        if (data.isDeleted === true || data.isReturned === true || data.isPendingSasVetting === true) {
+          return;
+        }
         const chain = data.approvalChain || [];
         const curStage = data.currentStageIndex ?? 1;
 
@@ -234,7 +335,7 @@ export async function getSignatoryPendingDocuments(
           if (matchesStep(step) && isStepPending(step)) {
             const stepStage = step.stageIndex ?? 1;
             const isCurrent = stepStage === curStage;
-            pendingDocs.push({
+            pushUnique({
               id: docSnap.id,
               documentType: 'par',
               title: data.eventTitle || data.eventName || data.title || 'Untitled PAR',
@@ -254,7 +355,8 @@ export async function getSignatoryPendingDocuments(
     console.warn('[getSignatoryPendingDocuments] Error scanning pending documents:', err);
   }
 
-  return pendingDocs;
+  // Sort current-turn documents first for clearer UX
+  return pendingDocs.sort((a, b) => Number(b.isCurrentTurn) - Number(a.isCurrentTurn));
 }
 
 /**
@@ -450,11 +552,14 @@ export async function transferSignatoryAssignments(
   // 2. Update Pending In-Flight Documents
   if (options.updatePendingDocuments !== false) {
     const pendingDocs = await getSignatoryPendingDocuments(oldId, oldEmail);
-    const relevantDocs = pendingDocs.filter((p) => targetDocTypes.includes(p.documentType));
+    const relevantDocs = pendingDocs.filter(
+      (p) => p.documentType === 'sbr' ? targetDocTypes.includes('proposal') : targetDocTypes.includes(p.documentType)
+    );
 
     // Group by document ID to avoid duplicate batch updates
     const docIdsByType = {
       proposal: new Set<string>(),
+      sbr: new Set<string>(),
       liquidation: new Set<string>(),
       par: new Set<string>(),
     };

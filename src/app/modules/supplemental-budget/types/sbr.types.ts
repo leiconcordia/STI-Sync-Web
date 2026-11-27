@@ -199,6 +199,7 @@ export interface SupplementalBudgetRequest {
   // Ledger & Disbursement Voucher Settlement
   ledgerDeducted: boolean;
   requiresClubLedgerAcknowledgment?: boolean;
+  requiresSupplementalVoucher?: boolean;
   ledgerAcknowledgedBy?: string;
   ledgerAcknowledgedAt?: any;
   ledgerDeductionKeys?: string[];
@@ -227,11 +228,11 @@ export interface CreateSupplementalBudgetPayload {
   semester?: string | null;
   baseApprovedBudget: number;
   priorSupplementalTotal: number;
-  reasonCategory: SupplementalReasonCategory;
+  reasonCategory?: SupplementalReasonCategory;
   justification: string;
   additionalItems: SupplementalExpenseItem[];
   requestedAmount: number;
-  supportingAttachments: SupplementalAttachment[];
+  supportingAttachments?: SupplementalAttachment[];
   fundingSource: SupplementalFundingSource;
   allocations: ProposalBucketAllocation[];
   approvalChain?: ProposalApprovalStep[];

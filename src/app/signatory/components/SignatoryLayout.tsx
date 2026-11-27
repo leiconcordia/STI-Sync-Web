@@ -6,19 +6,28 @@
  * Inspired by modern executive card-based layouts while preserving STI Sync brand identity.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Outlet, useNavigate, Navigate, NavLink, useLocation } from 'react-router';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '../../../services/firebase';
 import { formatPersonName } from '../../utils/name.utils';
 import { WorkspaceSwitcher } from '../../auth/components/WorkspaceSwitcher';
-import { clearPortalSessions } from '../../auth/services/portal-workspace.service';
+import {
+  clearPortalSessions,
+  readStoredPortalWorkspaces,
+} from '../../auth/services/portal-workspace.service';
 import { auth } from '../../../services/firebase';
 import { signOut } from 'firebase/auth';
+import { toast } from 'sonner';
 import {
   isSignatoryApplicableTo,
   getSignatoryAuthorizedWorkflows,
 } from '../../modules/signatories/types/signatory.types';
+import { resolveUserSignature } from '../../modules/signatories/services/signatory-resolver.service';
+import {
+  saveSignatorySignatureInDatabase,
+  setSignatoryPortalDeactivation,
+} from '../../modules/signatories/services/signatory.service';
 import {
   LayoutDashboard,
   FileText,
@@ -36,6 +45,10 @@ import {
   X,
   ShieldCheck,
   ChevronRight,
+  Power,
+  UserCog,
+  CalendarClock,
+  Loader2,
 } from 'lucide-react';
 import stiOrmocLogo from '../../../imports/STI_ORMOC_LOGO.jpg';
 import { SIGNATORY_SESSION_KEY } from '../../auth/hooks/useOfficerAuth';
@@ -50,6 +63,8 @@ export default function SignatoryLayout() {
   const [isSignatureModalOpen, setIsSignatureModalOpen] = useState(false);
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isReactivating, setIsReactivating] = useState(false);
+  const attemptedSubSigResolveRef = useRef(false);
 
   useEffect(() => {
     if (session?.requiresPasswordChange) setIsPasswordModalOpen(true);
@@ -82,23 +97,84 @@ export default function SignatoryLayout() {
     }
   }, []);
 
-  // Real-time synchronization of signatory record from Firestore
+  // Real-time synchronization of signatory record from Firestore (Substitute-isolated)
   useEffect(() => {
-    if (!session?.id) return;
+    const targetPrimaryId = session?.delegatedForSignatoryId || session?.id;
+    if (!targetPrimaryId) return;
     const unsub = onSnapshot(
-      doc(db, 'institutional_signatories', session.id),
+      doc(db, 'institutional_signatories', targetPrimaryId),
       (docSnap) => {
         if (docSnap.exists()) {
           const data = docSnap.data();
           const workflows = getSignatoryAuthorizedWorkflows(data as any);
+
+          let shouldExitDelegation = false;
           setSession((prev: any) => {
             if (!prev) return prev;
+
+            if (prev.actingAsSubstitute) {
+              const sub = data.substitute || null;
+              const subEmailLower = String(data.substituteEmail || sub?.email || '').trim().toLowerCase();
+              const prevEmailLower = String(prev.email || '').trim().toLowerCase();
+              const stillAuthorizedSub =
+                data.isActive !== false &&
+                data.portalDeactivated === true &&
+                Boolean(sub) &&
+                (!subEmailLower || !prevEmailLower || subEmailLower === prevEmailLower);
+
+              if (!stillAuthorizedSub) {
+                shouldExitDelegation = true;
+                return prev;
+              }
+
+              const baseRoleTitle = data.roleTitle || data.role || prev.delegatedForRoleTitle || 'Institutional Signatory';
+              const subSig = sub?.signatureUrl || sub?.signatureDataUrl || prev.signatureUrl || prev.signatureDataUrl || null;
+              const updated = {
+                ...prev,
+                id: docSnap.id,
+                delegatedForSignatoryId: docSnap.id,
+                delegatedForSignatoryUid: data.uid || docSnap.id,
+                delegatedForSignatoryName: formatPersonName(data, prev.delegatedForSignatoryName),
+                delegatedForSignatoryEmail: data.email || prev.delegatedForSignatoryEmail || '',
+                delegatedForRoleTitle: baseRoleTitle,
+                role: data.role || prev.role,
+                roleTitle: `Acting ${baseRoleTitle}`,
+                actionType: data.actionType || prev.actionType,
+                department: data.department || prev.department || '',
+                departmentId: data.departmentId || prev.departmentId || '',
+                applicableWorkflows: workflows,
+                applicableScope: data.applicableScope,
+                canApproveProposal: data.canApproveProposal ?? (data.actionType === 'approver'),
+                canApproveLiquidation: data.canApproveLiquidation ?? (data.actionType === 'approver'),
+                canApprovePar: data.canApprovePar ?? (data.actionType === 'approver'),
+                name: formatPersonName(sub, prev.name),
+                signatureUrl: subSig,
+                signatureDataUrl: subSig,
+                portalDeactivated: true,
+                portalDeactivatedReason: data.portalDeactivatedReason || null,
+                portalDeactivatedUntil: data.portalDeactivatedUntil || null,
+                requiresPasswordChange: Boolean(sub?.tempPass || sub?.requiresPasswordChange),
+              };
+              delete updated.tempPass;
+              delete updated.temporaryPassword;
+              delete updated.customPassword;
+              delete updated.passwordHash;
+              localStorage.setItem(SIGNATORY_SESSION_KEY, JSON.stringify(updated));
+              return updated;
+            }
+
             const updated = {
               ...prev,
               ...data,
               name: formatPersonName(data, prev.name),
               requiresPasswordChange: Boolean(data.tempPass || data.requiresPasswordChange || data.requiresChangePassword || data.resetInProgress),
               id: docSnap.id,
+              actingAsSubstitute: false,
+              portalDeactivated: Boolean(data.portalDeactivated),
+              portalDeactivatedReason: data.portalDeactivatedReason || null,
+              portalDeactivatedUntil: data.portalDeactivatedUntil || null,
+              substitute: data.substitute || null,
+              substituteEmail: data.substituteEmail || data.substitute?.email || null,
               applicableWorkflows: workflows,
               applicableScope: data.applicableScope,
               canApproveProposal: data.canApproveProposal ?? (data.actionType === 'approver'),
@@ -112,6 +188,18 @@ export default function SignatoryLayout() {
             localStorage.setItem(SIGNATORY_SESSION_KEY, JSON.stringify(updated));
             return updated;
           });
+
+          if (shouldExitDelegation) {
+            toast.info('The Primary Signatory portal has been reactivated. Exiting Acting Signatory mode.');
+            const remaining = readStoredPortalWorkspaces().filter((w) => w.id !== `signatory_sub:${targetPrimaryId}`);
+            if (remaining.length > 0) {
+              navigate('/portal/workspaces', { replace: true });
+            } else {
+              clearPortalSessions();
+              void signOut(auth);
+              navigate('/portal/login', { replace: true });
+            }
+          }
         }
       },
       (err) => {
@@ -119,7 +207,81 @@ export default function SignatoryLayout() {
       }
     );
     return () => unsub();
-  }, [session?.id]);
+  }, [session?.id, session?.delegatedForSignatoryId, navigate]);
+
+  // Auto-reuse an existing verified e-signature for a Substitute Signatory if not yet cached on the substitute slot
+  useEffect(() => {
+    if (!session?.actingAsSubstitute) return;
+    if (session?.signatureUrl || session?.signatureDataUrl) return;
+    if (attemptedSubSigResolveRef.current) return;
+    attemptedSubSigResolveRef.current = true;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const foundSig = await resolveUserSignature({
+          uid: session.substituteUid || session.authUid || session.uid,
+          email: session.email,
+          name: session.name,
+        });
+        if (!cancelled && foundSig) {
+          setSession((prev: any) => {
+            if (!prev || prev.signatureUrl) return prev;
+            const next = { ...prev, signatureUrl: foundSig, signatureDataUrl: foundSig, hasSignature: true };
+            localStorage.setItem(SIGNATORY_SESSION_KEY, JSON.stringify(next));
+            return next;
+          });
+          // Persist reused signature onto the substitute slot without touching Primary's signature
+          saveSignatorySignatureInDatabase(
+            {
+              uid: session.substituteUid || session.authUid || session.uid,
+              email: session.email,
+              actingAsSubstitute: true,
+              delegatedForSignatoryId: session.delegatedForSignatoryId || session.id,
+            },
+            null,
+            foundSig
+          ).catch(() => {});
+        }
+      } catch {}
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.actingAsSubstitute, session?.email, session?.uid, session?.signatureUrl, session?.signatureDataUrl]);
+
+  const handleReactivateMyPortal = async () => {
+    if (!session?.id || session?.actingAsSubstitute) return;
+    setIsReactivating(true);
+    try {
+      const res = await setSignatoryPortalDeactivation(
+        session.id,
+        { deactivated: false },
+        { uid: session.uid || session.id, name: session.name, role: 'signatory' }
+      );
+      if (!res.success) {
+        toast.error(res.error || 'Could not reactivate your Signatory Portal.');
+        return;
+      }
+      setSession((prev: any) => {
+        if (!prev) return prev;
+        const next = {
+          ...prev,
+          portalDeactivated: false,
+          portalDeactivatedReason: null,
+          portalDeactivatedUntil: null,
+        };
+        localStorage.setItem(SIGNATORY_SESSION_KEY, JSON.stringify(next));
+        return next;
+      });
+      toast.success('Your Signatory Portal is now active again. Delegated substitute access has been paused.');
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to reactivate portal.');
+    } finally {
+      setIsReactivating(false);
+    }
+  };
 
   const handleLogout = () => {
     clearPortalSessions();
@@ -443,19 +605,109 @@ export default function SignatoryLayout() {
           </div>
         </header>
 
+        {/* Acting Signatory Delegation Banner */}
+        {session?.actingAsSubstitute && (
+          <div className="bg-indigo-950 text-white px-4 sm:px-8 py-3 border-b border-indigo-800 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-8 h-8 rounded-lg bg-[#FFD41C]/20 border border-[#FFD41C]/40 text-[#FFD41C] flex items-center justify-center shrink-0">
+                <UserCog className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-extrabold tracking-wide text-[#FFD41C] uppercase">
+                  Acting Signatory Mode • Delegated Approval Authority
+                </p>
+                <p className="text-xs text-indigo-100">
+                  Signing on behalf of <strong className="text-white">{session?.delegatedForSignatoryName}</strong> ({session?.delegatedForRoleTitle || 'Institutional Signatory'}) while on leave. Your personal e-signature will be applied.
+                </p>
+              </div>
+            </div>
+            {!hasSignature && (
+              <button
+                type="button"
+                onClick={() => setIsSignatureModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#FFD41C] hover:bg-amber-300 text-[#001A4D] text-xs font-black shadow-xs transition-colors cursor-pointer shrink-0"
+              >
+                <PenTool className="w-3.5 h-3.5" />
+                Register Your E-Signature
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Dynamic Route Content */}
         <div className="flex-1 p-4 sm:p-6 lg:p-8">
-          <Outlet
-            context={{
-              session,
-              setSession,
-              onOpenSignatureModal: () => setIsSignatureModalOpen(true),
-              onOpenPasswordModal: () => setIsPasswordModalOpen(true),
-              canAccessProposal,
-              canAccessLiquidation,
-              canAccessPAR,
-            }}
-          />
+          {!session?.actingAsSubstitute && session?.portalDeactivated && !location.pathname.startsWith('/signatory/account') ? (
+            <div className="max-w-2xl mx-auto mt-6 bg-white rounded-3xl border border-amber-200 shadow-lg overflow-hidden">
+              <div className="bg-gradient-to-r from-[#001A4D] to-[#0A2E6D] px-6 py-5 text-white flex items-center gap-4">
+                <div className="w-12 h-12 rounded-2xl bg-[#FFD41C]/20 border border-[#FFD41C]/40 text-[#FFD41C] flex items-center justify-center shrink-0">
+                  <CalendarClock className="w-6 h-6" />
+                </div>
+                <div>
+                  <span className="inline-flex items-center px-2 py-0.5 rounded bg-amber-400/20 text-[#FFD41C] text-[10px] font-black uppercase tracking-wider mb-1">
+                    Portal Deactivated • On Leave
+                  </span>
+                  <h2 className="text-lg font-black tracking-tight">
+                    Your Signatory Portal is Currently Deactivated
+                  </h2>
+                </div>
+              </div>
+              <div className="p-6 space-y-5">
+                <p className="text-sm text-slate-600 leading-relaxed">
+                  Your approval workspace is paused while you are on leave.
+                  {session?.substitute?.name ? (
+                    <> Your designated Substitute Signatory, <strong className="text-slate-900">{session.substitute.name}</strong> ({session.substitute.email}), currently has Acting Signatory access to process your pending documents.</>
+                  ) : (
+                    <> No substitute signatory is currently assigned.</>
+                  )}
+                </p>
+
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Leave Reason</span>
+                  <span className="font-bold text-slate-800">{session?.portalDeactivatedReason || 'On Leave'}</span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 pt-2">
+                  <button
+                    type="button"
+                    disabled={isReactivating}
+                    onClick={handleReactivateMyPortal}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold shadow-md disabled:opacity-60 transition-all cursor-pointer"
+                  >
+                    {isReactivating ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Reactivating Portal...
+                      </>
+                    ) : (
+                      <>
+                        <Power className="w-4 h-4" />
+                        Reactivate My Signatory Portal
+                      </>
+                    )}
+                  </button>
+                  <NavLink
+                    to="/signatory/account"
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold transition-colors"
+                  >
+                    <UserCheck className="w-4 h-4" />
+                    Manage Substitute & Settings
+                  </NavLink>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <Outlet
+              context={{
+                session,
+                setSession,
+                onOpenSignatureModal: () => setIsSignatureModalOpen(true),
+                onOpenPasswordModal: () => setIsPasswordModalOpen(true),
+                canAccessProposal,
+                canAccessLiquidation,
+                canAccessPAR,
+              }}
+            />
+          )}
         </div>
       </main>
 
@@ -464,8 +716,17 @@ export default function SignatoryLayout() {
         <DigitalSignatureModal
           isOpen={isSignatureModalOpen}
           onClose={() => setIsSignatureModalOpen(false)}
+          signatoryUid={
+            session?.actingAsSubstitute
+              ? (session?.substituteUid || session?.authUid || session?.uid)
+              : (session?.id || session?.uid)
+          }
+          signatoryEmail={session?.email}
           signatoryName={session?.name || 'Signatory'}
           signatoryRole={session?.roleTitle || session?.role || 'Signatory'}
+          currentSignatureUrl={session?.signatureUrl || session?.signatureDataUrl}
+          actingAsSubstitute={Boolean(session?.actingAsSubstitute)}
+          delegatedForSignatoryId={session?.delegatedForSignatoryId || session?.id}
           onSignatureSaved={handleSignatureSaved}
         />
       )}

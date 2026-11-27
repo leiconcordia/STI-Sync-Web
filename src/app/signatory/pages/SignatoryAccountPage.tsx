@@ -6,7 +6,7 @@
  * in-portal password management, and official electronic signature verification.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useOutletContext } from 'react-router';
 import {
   User,
@@ -29,11 +29,19 @@ import {
   Layers,
   Info,
   Ban,
+  UserCog,
+  CalendarClock,
+  Power,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { changeSignatoryPassword } from '../../auth/services/password.service';
 import DigitalSignatureModal from '../components/DigitalSignatureModal';
 import { isSignatoryApplicableTo } from '../../modules/signatories/types/signatory.types';
+import { ManageSignatorySubstituteModal } from '../../modules/signatories/components/ManageSignatorySubstituteModal';
+import {
+  getSignatoryPendingDocuments,
+  type PendingDocumentInfo,
+} from '../../modules/signatories/services/signatory-validation.service';
 
 interface ContextType {
   session: any;
@@ -53,6 +61,30 @@ export default function SignatoryAccountPage() {
   const [showConfirm, setShowConfirm] = useState(false);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [isSignatureModalOpen, setIsSignatureModalOpen] = useState(false);
+  const [subModalTab, setSubModalTab] = useState<'substitute' | 'leave' | null>(null);
+  const [pendingDocs, setPendingDocs] = useState<PendingDocumentInfo[]>([]);
+  const [loadingPendingDocs, setLoadingPendingDocs] = useState(false);
+
+  const isActingSubstitute = Boolean(session?.actingAsSubstitute);
+  const assignedSubstitute = session?.substitute || null;
+  const isPortalDeactivated = Boolean(session?.portalDeactivated);
+
+  useEffect(() => {
+    if (!session?.id || isActingSubstitute) return;
+    let cancelled = false;
+    setLoadingPendingDocs(true);
+    getSignatoryPendingDocuments(session.id, session.email)
+      .then((docs) => {
+        if (!cancelled) setPendingDocs(docs);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoadingPendingDocs(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.id, session?.email, isActingSubstitute, subModalTab]);
 
   const hasSignature = Boolean(session?.signatureUrl || session?.signatureDataUrl);
   const signatureUrl = session?.signatureUrl || session?.signatureDataUrl;
@@ -335,6 +367,157 @@ export default function SignatoryAccountPage() {
         </div>
       </div>
 
+      {/* Substitute Signatory & Portal Availability (On-Leave Delegation) */}
+      {isActingSubstitute ? (
+        <div className="bg-indigo-50/80 border-2 border-indigo-200 rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-start gap-3.5">
+            <div className="w-11 h-11 rounded-xl bg-[#001A4D] text-[#FFD41C] flex items-center justify-center shrink-0">
+              <UserCog className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-base font-black text-[#001A4D]">
+                Acting Signatory Delegation Active
+              </h3>
+              <p className="text-xs text-slate-700 mt-1 leading-relaxed">
+                You are currently acting on behalf of <strong>{session?.delegatedForSignatoryName}</strong> ({session?.delegatedForRoleTitle || 'Institutional Signatory'}) while their portal is deactivated on leave. Your personal e-signature below is kept separate from the primary signatory’s profile and will be stamped as <strong>Acting {session?.delegatedForRoleTitle || 'Signatory'}</strong>.
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-indigo-50 text-indigo-700 flex items-center justify-center">
+                <UserCog className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-[#001A4D]">
+                  Substitute Signatory & Portal Availability (On-Leave Mode)
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Designate an authorized substitute to approve your pending documents whenever you deactivate your portal on leave.
+                </p>
+              </div>
+            </div>
+            <span
+              className={`px-3 py-1 rounded-full text-[11px] font-black uppercase tracking-wider self-start sm:self-auto ${
+                isPortalDeactivated
+                  ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                  : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+              }`}
+            >
+              {isPortalDeactivated ? 'Portal Deactivated (On Leave)' : 'Portal Active'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {/* Substitute Card */}
+            <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 flex flex-col justify-between gap-4">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
+                    Designated Substitute Signatory
+                  </span>
+                  {assignedSubstitute ? (
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-black">
+                      Assigned
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-black">
+                      None Assigned
+                    </span>
+                  )}
+                </div>
+
+                {assignedSubstitute ? (
+                  <div className="bg-white rounded-xl border border-slate-200 p-3 space-y-1.5">
+                    <p className="text-sm font-black text-[#001A4D]">{assignedSubstitute.name}</p>
+                    <p className="text-xs text-slate-500">{assignedSubstitute.email}</p>
+                    <div className="flex items-center gap-1.5 pt-1 text-[11px] font-bold">
+                      {assignedSubstitute.signatureUrl || assignedSubstitute.signatureDataUrl ? (
+                        <span className="text-emerald-700 flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          E-Signature Ready (Reused / Registered)
+                        </span>
+                      ) : (
+                        <span className="text-amber-700 flex items-center gap-1">
+                          <AlertTriangle className="w-3.5 h-3.5" />
+                          Signature setup required on first approval
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    No substitute is currently assigned. You must assign a substitute before deactivating your portal if you have pending documents to approve.
+                  </p>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setSubModalTab('substitute')}
+                className="w-full py-2.5 px-4 rounded-xl bg-[#001A4D] hover:bg-[#0A2E6D] text-white text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer"
+              >
+                <UserCog className="w-4 h-4 text-[#FFD41C]" />
+                <span>{assignedSubstitute ? 'Change or Remove Substitute' : 'Assign Substitute Signatory'}</span>
+              </button>
+            </div>
+
+            {/* Portal Deactivation / Leave Card */}
+            <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 flex flex-col justify-between gap-4">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
+                    Portal Deactivation (On Leave)
+                  </span>
+                  <span className="text-[11px] font-bold text-slate-600">
+                    {loadingPendingDocs ? 'Checking...' : `${pendingDocs.length} Pending Doc${pendingDocs.length === 1 ? '' : 's'}`}
+                  </span>
+                </div>
+
+                {isPortalDeactivated ? (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-950 space-y-1">
+                    <p className="font-bold flex items-center gap-1.5">
+                      <CalendarClock className="w-4 h-4 text-amber-700" />
+                      Currently Deactivated ({session?.portalDeactivatedReason || 'On Leave'})
+                    </p>
+                    <p className="text-amber-800">
+                      {assignedSubstitute
+                        ? `${assignedSubstitute.name} can currently log in and approve your pending documents.`
+                        : 'Portal is paused. Reactivate anytime to resume signing.'}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    Going on leave? Deactivating your portal unlocks Acting Signatory login access for your designated substitute.
+                    {pendingDocs.length > 0 && !assignedSubstitute && (
+                      <span className="block mt-1.5 font-bold text-rose-700">
+                        Blocked: You have {pendingDocs.length} pending document{pendingDocs.length === 1 ? '' : 's'} and no substitute assigned.
+                      </span>
+                    )}
+                  </p>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setSubModalTab('leave')}
+                className={`w-full py-2.5 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                  isPortalDeactivated
+                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                    : 'bg-amber-600 hover:bg-amber-700 text-white'
+                }`}
+              >
+                <Power className="w-4 h-4" />
+                <span>{isPortalDeactivated ? 'Reactivate My Signatory Portal' : 'Deactivate Portal (On Leave)'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Grid: E-Signature Card & Password Form */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Left: Official Electronic Signature */}
@@ -552,9 +735,52 @@ export default function SignatoryAccountPage() {
         <DigitalSignatureModal
           isOpen={isSignatureModalOpen}
           onClose={() => setIsSignatureModalOpen(false)}
+          signatoryUid={
+            session?.actingAsSubstitute
+              ? (session?.substituteUid || session?.authUid || session?.uid)
+              : (session?.id || session?.uid)
+          }
+          signatoryEmail={session?.email}
           signatoryName={session?.name || 'Signatory'}
           signatoryRole={session?.roleTitle || session?.role || 'Signatory'}
+          currentSignatureUrl={signatureUrl || undefined}
+          actingAsSubstitute={isActingSubstitute}
+          delegatedForSignatoryId={session?.delegatedForSignatoryId || session?.id}
           onSignatureSaved={handleSignatureSaved}
+        />
+      )}
+
+      {/* Substitute & Leave Modal */}
+      {subModalTab && session?.id && !isActingSubstitute && (
+        <ManageSignatorySubstituteModal
+          isOpen={Boolean(subModalTab)}
+          onClose={() => setSubModalTab(null)}
+          initialTab={subModalTab}
+          signatory={{
+            id: session.id,
+            uid: session.uid,
+            name: session.name || 'Institutional Signatory',
+            email: session.email || '',
+            roleTitle: session.roleTitle || session.role || 'Institutional Signatory',
+            department: session.department || '',
+            substitute: session.substitute || null,
+            portalDeactivated: Boolean(session.portalDeactivated),
+            portalDeactivatedReason: session.portalDeactivatedReason || null,
+            portalDeactivatedUntil: session.portalDeactivatedUntil || null,
+          }}
+          actor={{
+            uid: session.uid || session.id,
+            name: session.name || 'Institutional Signatory',
+            role: 'signatory',
+          }}
+          onUpdated={(updates) => {
+            setSession((prev: any) => {
+              if (!prev) return prev;
+              const next = { ...prev, ...updates };
+              localStorage.setItem('sti_sync_signatory_session', JSON.stringify(next));
+              return next;
+            });
+          }}
         />
       )}
     </div>

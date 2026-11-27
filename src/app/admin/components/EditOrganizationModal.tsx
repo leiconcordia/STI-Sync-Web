@@ -13,7 +13,10 @@ import {
   Mail,
   KeyRound,
   AlertTriangle,
+  UserCog,
 } from 'lucide-react';
+import { ManageAdviserSubstituteModal } from '../../modules/organizations/components/ManageAdviserSubstituteModal';
+import { isPrimaryAdviserUnavailable } from '../../modules/organizations/utils/adviser-authority.utils';
 import type { OrganizationDocument } from '../../modules/organizations/types/organization.types';
 import { useOrganizationTypes } from '../../modules/organizations/hooks/useOrganizationTypes';
 import { useCourses, useDepartments } from '../../modules/academic';
@@ -53,6 +56,7 @@ export function EditOrganizationModal({
   const { data: allOrganizations = [] } = useOrganizationStream();
   const { data: employees = [] } = useEmployees();
   const [signatories, setSignatories] = useState<InstitutionalSignatory[]>([]);
+  const [showAdviserLeaveModal, setShowAdviserLeaveModal] = useState(false);
 
   useEffect(() => {
     const unsub = subscribeToSignatories((list) => setSignatories(list));
@@ -1064,19 +1068,34 @@ export function EditOrganizationModal({
                   Secondary Club Adviser / Co-Adviser
                 </span>
               </div>
-              {coAdviserMode === 'unassign' ? (
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700 border border-rose-200">
-                  Will Be Removed on Save
-                </span>
-              ) : organization.coAdviser?.name ? (
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
-                  Assigned
-                </span>
-              ) : (
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-gray-200 text-gray-700">
-                  Optional • Unassigned
-                </span>
-              )}
+              <div className="flex items-center gap-2 flex-wrap">
+                {isPrimaryAdviserUnavailable(organization.adviserAvailability) && (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                    Primary Inactive • Sub Active
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowAdviserLeaveModal(true)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-white hover:bg-indigo-100 text-indigo-800 border border-indigo-300 transition-colors cursor-pointer"
+                >
+                  <UserCog className="w-3.5 h-3.5" />
+                  <span>Portal Status / Sub</span>
+                </button>
+                {coAdviserMode === 'unassign' ? (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700 border border-rose-200">
+                    Will Be Removed on Save
+                  </span>
+                ) : organization.coAdviser?.name ? (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                    Assigned
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-gray-200 text-gray-700">
+                    Optional • Unassigned
+                  </span>
+                )}
+              </div>
             </div>
 
             {/* State A: Keep Current Co-Adviser */}
@@ -1393,6 +1412,22 @@ export function EditOrganizationModal({
           </button>
         </div>
       </div>
+
+      {showAdviserLeaveModal && organization && (
+        <ManageAdviserSubstituteModal
+          isOpen={showAdviserLeaveModal}
+          onClose={() => setShowAdviserLeaveModal(false)}
+          organization={{
+            id: organization.id,
+            name: organization.name,
+            adviser: organization.adviser || null,
+            coAdviser: organization.coAdviser || null,
+            adviserAvailability: organization.adviserAvailability || null,
+          }}
+          actorName={adminName}
+          initialTab="leave"
+        />
+      )}
     </div>
   );
 }

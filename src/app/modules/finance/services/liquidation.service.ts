@@ -4,6 +4,7 @@ import {
   updateDoc, 
   doc, 
   getDoc,
+  getDocFromCache,
   getDocs,
   runTransaction,
   query,
@@ -25,7 +26,14 @@ import { EVENTS_COLLECTION } from '../../events/services/event.service';
 import { removeLedgerTransactionsForLiquidation } from './finance.service';
 import { getActiveMiscFeeAcademicContext } from './misc-fee.service';
 import { hasAnySignatorySigned } from '../../workflow/utils/approval-permissions.utils';
-import { resolveAdviserActorAuditContext } from '../../organizations/services/organization.service';
+import {
+  assertAdviserCanApproveForOrg,
+  resolveAdviserActorAuditContext,
+} from '../../organizations/services/organization.service';
+import {
+  matchesSignatoryOrSubstituteStep,
+  resolveSignerAttribution,
+} from '../../signatories/utils/signatory-substitute.utils';
 import type { 
   LiquidationDocument, 
   LiquidationRemark, 
@@ -1422,35 +1430,54 @@ export async function endorseLiquidationStep(
     signatureUrl?: string;
     canApproveLiquidation?: boolean;
     approvalDecision?: 'approve' | 'forward';
+    actingAsSubstitute?: boolean;
+    substituteUid?: string;
+    delegatedForSignatoryId?: string;
+    delegatedForSignatoryUid?: string;
+    delegatedForSignatoryName?: string;
+    delegatedForSignatoryEmail?: string;
+    delegatedForRoleTitle?: string;
   },
   remarks = '',
   approvalDecision?: 'approve' | 'forward'
 ): Promise<{ success: boolean; nextStepIndex: number; isFullyApproved: boolean; stageAdvanced?: boolean }> {
   const docRef = doc(db, LIQUIDATIONS_COLLECTION, liquidationId);
-  const preSnap = await getDoc(docRef);
+  const isQuotaErr = (err: any) => {
+    const code = String(err?.code || '').toLowerCase();
+    const msg = String(err?.message || '').toLowerCase();
+    return code === 'resource-exhausted' || msg.includes('quota exceeded') || msg.includes('resource-exhausted');
+  };
+  const readDocSafe = async (ref: ReturnType<typeof doc>) => {
+    try {
+      return await getDoc(ref);
+    } catch (err: any) {
+      if (isQuotaErr(err)) return await getDocFromCache(ref);
+      throw err;
+    }
+  };
+
+  const preSnap = await readDocSafe(docRef);
   if (!preSnap.exists()) throw new Error('Liquidation report not found');
 
   const preData = preSnap.data() as LiquidationDocument;
   // Pre-resolve source allocations outside the Firestore transaction so the commit itself is purely atomic
-  const preResolvedAllocs =
-    preData.status !== 'approved' ? await resolveLiquidationSourceAllocations(preData) : [];
+  let preResolvedAllocs: ProposalBucketAllocation[] = [];
+  if (preData.status !== 'approved') {
+    try {
+      preResolvedAllocs = await resolveLiquidationSourceAllocations(preData);
+    } catch (allocErr) {
+      console.warn('[endorseLiquidationStep] Non-blocking allocation pre-resolve note:', allocErr);
+    }
+  }
 
-  const signerUid = signatory.id || signatory.uid || '';
-  const signerEmail = (signatory.email || '').toLowerCase();
+  const signerAttr = resolveSignerAttribution(signatory);
+  const signerUid = signerAttr.signerUid || signatory.id || signatory.uid || '';
+  const signerEmail = signerAttr.signerEmail || (signatory.email || '').toLowerCase();
   const decision = approvalDecision || signatory.approvalDecision;
 
-  const matchesSignatory = (s: any) => {
-    if (signerUid && s.signatoryUid === signerUid) return true;
-    if (signerEmail && s.signatoryEmail?.toLowerCase() === signerEmail) return true;
-    if (signatory.role && s.role === signatory.role) return true;
-    return false;
-  };
+  const matchesSignatory = (s: any) => matchesSignatoryOrSubstituteStep(s, signatory);
 
-  const txResult = await runTransaction(db, async (tx) => {
-    const snap = await tx.get(docRef);
-    if (!snap.exists()) throw new Error('Liquidation report not found');
-
-    const data = snap.data() as LiquidationDocument;
+  const computeLiqEndorse = (data: LiquidationDocument) => {
     const chain = [...(data.approvalChain || [])];
     if (chain.length === 0) throw new Error('No approval steps found on this liquidation report');
 
@@ -1517,12 +1544,23 @@ export async function endorseLiquidationStep(
     let updatedStep: Record<string, any> = {
       ...targetStep,
       status: newStatus,
-      signatoryUid: signerUid || targetStep.signatoryUid || '',
+      signatoryUid: signerAttr.actedAsSubstitute
+        ? (signerAttr.originalSignatoryUid || targetStep.signatoryUid || signerUid)
+        : (signerUid || targetStep.signatoryUid || ''),
       signedByUid: signerUid || targetStep.signatoryUid || '',
-      signatoryName: signatory.name || targetStep.signatoryName || '',
-      signedByName: signatory.name || targetStep.signatoryName || '',
-      signatoryEmail: signatory.email || targetStep.signatoryEmail || '',
+      signatoryName: signerAttr.signerName || targetStep.signatoryName || '',
+      signedByName: signerAttr.signerName || targetStep.signatoryName || '',
+      signatoryEmail: signerEmail || targetStep.signatoryEmail || '',
       signedByEmail: signerEmail || targetStep.signatoryEmail || '',
+      ...(signerAttr.actedAsSubstitute
+        ? {
+            roleTitle: signerAttr.signerRoleTitle,
+            actedAsSubstitute: true,
+            originalSignatoryUid: signerAttr.originalSignatoryUid || targetStep.signatoryUid || '',
+            originalSignatoryName: signerAttr.originalSignatoryName || targetStep.signatoryName || '',
+            originalSignatoryEmail: signerAttr.originalSignatoryEmail || targetStep.signatoryEmail || '',
+          }
+        : {}),
       signedAt,
     };
 
@@ -1667,8 +1705,6 @@ export async function endorseLiquidationStep(
       }
     }
 
-    tx.update(docRef, sanitizeFirestorePayload(rawUpdates));
-
     return {
       data,
       sanitizedChain,
@@ -1681,7 +1717,27 @@ export async function endorseLiquidationStep(
       wasCoercedByPriorApproval,
       approvedBySignatoryName: capabilities.approvedBySignatoryName,
     };
-  });
+  };
+
+  let txResult: ReturnType<typeof computeLiqEndorse>;
+  try {
+    txResult = await runTransaction(db, async (tx) => {
+      const snap = await tx.get(docRef);
+      if (!snap.exists()) throw new Error('Liquidation report not found');
+      const computed = computeLiqEndorse(snap.data() as LiquidationDocument);
+      tx.update(docRef, sanitizeFirestorePayload(computed.rawUpdates));
+      return computed;
+    });
+  } catch (txErr: any) {
+    if (!isQuotaErr(txErr)) {
+      throw txErr;
+    }
+    console.warn('[endorseLiquidationStep] Transaction hit Firestore quota limit; falling back to cache-backed updateDoc.');
+    const snap = await readDocSafe(docRef);
+    if (!snap.exists()) throw new Error('Liquidation report not found');
+    txResult = computeLiqEndorse(snap.data() as LiquidationDocument);
+    await updateDoc(docRef, sanitizeFirestorePayload(txResult.rawUpdates));
+  }
 
   const {
     data,
@@ -3164,6 +3220,7 @@ export async function approveAndForwardLiquidationByAdviser(
   const snap = await getDoc(docRef);
   if (!snap.exists()) throw new Error('Liquidation report not found.');
   const data = snap.data() as LiquidationDocument;
+  await assertAdviserCanApproveForOrg((data as any).organizationId || (data as any).hostingOrgId, adviser);
 
   const resolvedSource = String(data.fundingSource || 'organization_funds').toLowerCase();
   const isOrgDirectSas =
@@ -3316,6 +3373,7 @@ export async function returnLiquidationByAdviser(
   const snap = await getDoc(docRef);
   if (!snap.exists()) throw new Error('Liquidation report not found.');
   const data = snap.data() as LiquidationDocument;
+  await assertAdviserCanApproveForOrg((data as any).organizationId || (data as any).hostingOrgId, adviser);
 
   const nowIso = new Date().toISOString();
   const adviserReview = {
@@ -3402,6 +3460,7 @@ export async function rejectLiquidationByAdviser(
   const snap = await getDoc(docRef);
   if (!snap.exists()) throw new Error('Liquidation report not found.');
   const data = snap.data() as LiquidationDocument;
+  await assertAdviserCanApproveForOrg((data as any).organizationId || (data as any).hostingOrgId, adviser);
 
   const nowIso = new Date().toISOString();
   const adviserReview = {

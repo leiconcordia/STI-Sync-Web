@@ -250,3 +250,307 @@ export function checkStudentMembershipLimits(params: {
     typeQuota,
   };
 }
+
+export interface OrgTypeVsGlobalValidationResult {
+  valid: boolean;
+  reason?: string;
+}
+
+/**
+ * Validates that a Per-Organization-Type limit does not exceed the Global Maximum
+ * Organizations per Student (invariant: Per-Type Limit <= Global Limit when Global is finite).
+ * A null/unlimited Per-Type limit is always allowed (meaning "no separate sub-cap; follow Global Limit").
+ */
+export function validateOrgTypeLimitAgainstGlobal(params: {
+  proposedTypeLimit?: number | null;
+  globalLimit?: number | null;
+  orgTypeName?: string;
+}): OrgTypeVsGlobalValidationResult {
+  const typeMax = normalizeMaxMembershipsPerStudent(params.proposedTypeLimit);
+  const globalMax = normalizeMaxMembershipsPerStudent(params.globalLimit);
+  const typeName = String(params.orgTypeName || 'This organization type').trim() || 'This organization type';
+
+  if (globalMax !== null && typeMax !== null && typeMax > globalMax) {
+    return {
+      valid: false,
+      reason: `"${typeName}" limit (${typeMax}) cannot exceed the Global Maximum Organizations per Student (${globalMax}). Set it to ${globalMax} or less, leave it blank to follow the Global Limit, or raise the Global Limit first.`,
+    };
+  }
+
+  return { valid: true };
+}
+
+export interface ConflictingOrgTypeLimit {
+  id: string;
+  name: string;
+  currentLimit: number;
+  newCappedLimit: number;
+}
+
+/**
+ * Finds active (non-archived) organization types whose configured per-type limit
+ * exceeds a newly proposed finite Global Limit, so they can be auto-capped on confirmation.
+ */
+export function findConflictingOrgTypesForGlobalLimit(params: {
+  proposedGlobalLimit?: number | null;
+  orgTypes?: Array<{
+    id: string;
+    name: string;
+    maxMembershipsPerStudent?: number | null;
+    archived?: boolean;
+  }>;
+}): ConflictingOrgTypeLimit[] {
+  const globalMax = normalizeMaxMembershipsPerStudent(params.proposedGlobalLimit);
+  if (globalMax === null) return [];
+
+  const conflicts: ConflictingOrgTypeLimit[] = [];
+  for (const t of params.orgTypes || []) {
+    if (!t || t.archived) continue;
+    const typeMax = normalizeMaxMembershipsPerStudent(t.maxMembershipsPerStudent);
+    if (typeMax !== null && typeMax > globalMax) {
+      conflicts.push({
+        id: t.id,
+        name: t.name,
+        currentLimit: typeMax,
+        newCappedLimit: globalMax,
+      });
+    }
+  }
+  return conflicts;
+}
+
+export interface AffectedOverLimitStudent {
+  studentKey: string;
+  studentId: string;
+  studentName: string;
+  currentCount: number;
+  orgNames: string[];
+}
+
+export interface MembershipLimitImpactSummary {
+  proposedLimit: number | null;
+  totalAffected: number;
+  affectedStudents: AffectedOverLimitStudent[];
+}
+
+export interface LightweightMembershipRecord {
+  studentId?: string;
+  authUid?: string;
+  studentName?: string;
+  organizationId?: string;
+  status?: string;
+}
+
+/**
+ * Scans active memberships across non-archived organizations to identify existing students
+ * who currently exceed a proposed Global Maximum Organizations per Student.
+ * Existing students are grandfathered (not auto-removed) and blocked from joining new orgs.
+ */
+export function analyzeGlobalLimitImpact(params: {
+  proposedGlobalLimit?: number | null;
+  allOrganizations?: Array<{
+    id?: string;
+    name?: string;
+    acronym?: string;
+    typeId?: string;
+    status?: string;
+    archived?: boolean;
+  }>;
+  allMemberships?: LightweightMembershipRecord[];
+}): MembershipLimitImpactSummary {
+  const globalMax = normalizeMaxMembershipsPerStudent(params.proposedGlobalLimit);
+  if (globalMax === null) {
+    return { proposedLimit: null, totalAffected: 0, affectedStudents: [] };
+  }
+
+  const orgById = new Map<
+    string,
+    { id?: string; name?: string; acronym?: string; typeId?: string; status?: string; archived?: boolean }
+  >();
+  for (const org of params.allOrganizations || []) {
+    const id = normalizeId(org?.id);
+    if (id) orgById.set(id, org);
+  }
+
+  const byStudent = new Map<
+    string,
+    { studentId: string; studentName: string; orgIds: Set<string>; orgNames: string[] }
+  >();
+
+  for (const m of params.allMemberships || []) {
+    const status = String(m?.status || '').trim().toLowerCase();
+    if (!ACTIVE_QUOTA_STATUSES.has(status)) continue;
+
+    const orgId = normalizeId(m?.organizationId);
+    if (!orgId) continue;
+
+    const matchedOrg = orgById.get(orgId);
+    if (matchedOrg) {
+      const orgStatus = String(matchedOrg.status || '').trim().toLowerCase();
+      if (matchedOrg.archived === true || orgStatus === 'archived' || orgStatus === 'deleted') {
+        continue;
+      }
+    }
+
+    const rawStudentId = normalizeId(m?.studentId);
+    const rawAuthUid = normalizeId(m?.authUid);
+    const studentKey = (rawStudentId || rawAuthUid).toLowerCase();
+    if (!studentKey) continue;
+
+    let entry = byStudent.get(studentKey);
+    if (!entry) {
+      entry = {
+        studentId: rawStudentId || rawAuthUid,
+        studentName: String(m?.studentName || rawStudentId || 'Student').trim() || 'Student',
+        orgIds: new Set<string>(),
+        orgNames: [],
+      };
+      byStudent.set(studentKey, entry);
+    } else if (
+      (!entry.studentName || entry.studentName === entry.studentId || entry.studentName === 'Student') &&
+      m?.studentName
+    ) {
+      entry.studentName = String(m.studentName).trim();
+    }
+
+    if (!entry.orgIds.has(orgId)) {
+      entry.orgIds.add(orgId);
+      entry.orgNames.push(String(matchedOrg?.acronym || matchedOrg?.name || orgId).trim());
+    }
+  }
+
+  const affectedStudents: AffectedOverLimitStudent[] = [];
+  for (const [studentKey, entry] of byStudent.entries()) {
+    if (entry.orgIds.size > globalMax) {
+      affectedStudents.push({
+        studentKey,
+        studentId: entry.studentId,
+        studentName: entry.studentName,
+        currentCount: entry.orgIds.size,
+        orgNames: entry.orgNames,
+      });
+    }
+  }
+
+  affectedStudents.sort(
+    (a, b) => b.currentCount - a.currentCount || a.studentName.localeCompare(b.studentName)
+  );
+
+  return {
+    proposedLimit: globalMax,
+    totalAffected: affectedStudents.length,
+    affectedStudents,
+  };
+}
+
+/**
+ * Scans active memberships in non-archived organizations belonging to `orgTypeId`
+ * to identify existing students who currently exceed a proposed Per-Organization-Type limit.
+ */
+export function analyzeOrgTypeLimitImpact(params: {
+  orgTypeId: string;
+  proposedTypeLimit?: number | null;
+  allOrganizations?: Array<{
+    id?: string;
+    name?: string;
+    acronym?: string;
+    typeId?: string;
+    status?: string;
+    archived?: boolean;
+  }>;
+  allMemberships?: LightweightMembershipRecord[];
+}): MembershipLimitImpactSummary {
+  const typeMax = normalizeMaxMembershipsPerStudent(params.proposedTypeLimit);
+  const targetTypeId = normalizeId(params.orgTypeId);
+  if (typeMax === null || !targetTypeId) {
+    return { proposedLimit: typeMax, totalAffected: 0, affectedStudents: [] };
+  }
+
+  const matchingOrgs = (params.allOrganizations || []).filter((org) => {
+    if (!org) return false;
+    const orgStatus = String(org.status || '').trim().toLowerCase();
+    if (org.archived === true || orgStatus === 'archived' || orgStatus === 'deleted') return false;
+    return normalizeId(org.typeId) === targetTypeId;
+  });
+
+  const matchingOrgIds = new Set(matchingOrgs.map((o) => normalizeId(o.id)).filter(Boolean));
+  const filteredMemberships = (params.allMemberships || []).filter((m) =>
+    matchingOrgIds.has(normalizeId(m?.organizationId))
+  );
+
+  return analyzeGlobalLimitImpact({
+    proposedGlobalLimit: typeMax,
+    allOrganizations: matchingOrgs,
+    allMemberships: filteredMemberships,
+  });
+}
+
+export interface OrgTypeArchivalValidationResult {
+  allowed: boolean;
+  activeClubCount: number;
+  activeClubNames: string[];
+  reason?: string;
+}
+
+/**
+ * Prevents archiving (or deleting) an Organization Classification / Type while one or more
+ * active (non-archived, non-deleted) organizations are still assigned to it.
+ */
+export function validateOrgTypeArchival(params: {
+  orgTypeId: string;
+  orgTypeName?: string;
+  allOrganizations?: Array<{
+    id?: string;
+    name?: string;
+    acronym?: string;
+    typeId?: string;
+    typeName?: string;
+    status?: string;
+    archived?: boolean;
+  }>;
+}): OrgTypeArchivalValidationResult {
+  const targetTypeId = normalizeId(params.orgTypeId);
+  const targetTypeNameLower = String(params.orgTypeName || '').trim().toLowerCase();
+  const displayTypeName = String(params.orgTypeName || 'this organization type').trim() || 'this organization type';
+
+  const activeClubNames: string[] = [];
+  for (const org of params.allOrganizations || []) {
+    if (!org) continue;
+    const status = String(org.status || '').trim().toLowerCase();
+    if (org.archived === true || status === 'archived' || status === 'deleted') {
+      continue;
+    }
+
+    const orgTypeId = normalizeId(org.typeId);
+    const orgTypeNameLower = String(org.typeName || '').trim().toLowerCase();
+    const matches =
+      (targetTypeId && orgTypeId === targetTypeId) ||
+      (!orgTypeId && targetTypeNameLower && orgTypeNameLower === targetTypeNameLower);
+
+    if (matches) {
+      const label = org.acronym && org.name && org.acronym !== org.name
+        ? `${org.name} (${org.acronym})`
+        : String(org.name || org.acronym || org.id || 'Unnamed Club').trim();
+      activeClubNames.push(label);
+    }
+  }
+
+  if (activeClubNames.length > 0) {
+    const previewList =
+      activeClubNames.length <= 5
+        ? activeClubNames.join(', ')
+        : `${activeClubNames.slice(0, 5).join(', ')} and ${activeClubNames.length - 5} more`;
+    return {
+      allowed: false,
+      activeClubCount: activeClubNames.length,
+      activeClubNames,
+      reason: `Cannot archive "${displayTypeName}": ${activeClubNames.length} active organization${activeClubNames.length === 1 ? ' is' : 's are'} currently using this classification (${previewList}). Reassign or archive ${activeClubNames.length === 1 ? 'that organization' : 'those organizations'} first.`,
+    };
+  }
+
+  return {
+    allowed: true,
+    activeClubCount: 0,
+    activeClubNames: [],
+  };
+}

@@ -127,13 +127,13 @@ export function calculateFinancialTotals(
 
 /**
  * Check compliance with the STI 15-Calendar-Day Rule:
- * Compares the Target Implementation Date / Activity Session Dates against the submission date.
- * Preparatory tasks in Step 5 (scheduled from today up to the implementation date) do NOT trigger Urgent mode.
+ * Compares the earliest scheduled milestone (initial task in Step 5, target implementation date,
+ * or activity session date) against the AP submission date.
  */
 export function check15DayRule(
   submissionDateStr: string,
   sessions: ProposalSession[] = [],
-  _tasks: ProposalTask[] = [],
+  tasks: ProposalTask[] = [],
   eventDate?: string
 ): {
   isCompliant: boolean;
@@ -161,16 +161,26 @@ export function check15DayRule(
     });
   }
 
+  // 3. Collect Step 5 task list completion dates (initial task must be >= 15 days from submission)
+  if (tasks && tasks.length > 0) {
+    tasks.forEach((t) => {
+      if (t?.completionDate) {
+        const parsed = parseISO(t.completionDate);
+        if (isValid(parsed)) dates.push(parsed);
+      }
+    });
+  }
+
   if (dates.length === 0) {
     return {
       isCompliant: true,
       daysDiff: 15,
       earliestDate: null,
-      policyRequirement: '15 calendar days before target implementation date',
+      policyRequirement: '15 calendar days from AP submission before initial task / implementation date',
     };
   }
 
-  // Find earliest implementation / session date
+  // Find earliest scheduled date (initial task or implementation/session date)
   const earliest = new Date(Math.min(...dates.map((d) => d.getTime())));
   let submissionDate = new Date();
   if (submissionDateStr) {
@@ -189,7 +199,7 @@ export function check15DayRule(
     isCompliant,
     daysDiff,
     earliestDate: format(earliest, 'yyyy-MM-dd'),
-    policyRequirement: '15 calendar days before target implementation date',
+    policyRequirement: '15 calendar days from AP submission before initial task / implementation date',
   };
 }
 
@@ -197,16 +207,19 @@ export const POST_EVENT_TASK_WINDOW_DAYS = 0;
 
 /**
  * Computes valid task completion date bounds for Step 5 Task List:
- * - Minimum: today (`todayStr`) — preparatory tasks can start immediately from today.
+ * - Standard AP: Minimum is AP submission date + 15 calendar days (`standardMinDate`).
+ * - Urgent AP (expedited exemption): Minimum is AP submission date (`submissionDateStr`).
  * - Maximum: the latest implementation/session date (`implementationEndDate`).
  */
 export function resolveTaskDateBounds(params: {
   eventDate?: string;
   sessions?: Array<{ date?: string }>;
   isUrgent?: boolean;
+  submissionDateStr?: string;
   todayStr?: string;
 }): {
   todayStr: string;
+  submissionDateStr: string;
   standardMinDate: string;
   minTaskDate: string;
   implementationStartDate: string;
@@ -217,8 +230,21 @@ export function resolveTaskDateBounds(params: {
     ? parseISO(params.todayStr)
     : new Date();
   const todayStr = format(now, 'yyyy-MM-dd');
-  const standardMinDate = format(addDays(now, 15), 'yyyy-MM-dd');
-  const minTaskDate = todayStr;
+
+  let submissionDate = now;
+  if (params.submissionDateStr && params.submissionDateStr.trim()) {
+    const rawSub = params.submissionDateStr.trim();
+    const parsedSub = /^\d{4}-\d{2}-\d{2}$/.test(rawSub)
+      ? parseISO(rawSub)
+      : new Date(rawSub);
+    if (isValid(parsedSub)) {
+      submissionDate = parsedSub;
+    }
+  }
+
+  const submissionDateStr = format(submissionDate, 'yyyy-MM-dd');
+  const standardMinDate = format(addDays(submissionDate, 15), 'yyyy-MM-dd');
+  const minTaskDate = params.isUrgent ? submissionDateStr : standardMinDate;
 
   const validDates = Array.from(
     new Set(
@@ -236,6 +262,7 @@ export function resolveTaskDateBounds(params: {
 
   return {
     todayStr,
+    submissionDateStr,
     standardMinDate,
     minTaskDate,
     implementationStartDate,

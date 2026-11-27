@@ -5,8 +5,15 @@
  */
 
 import { canSignatoryApproveDocument, resolveSignatoryLabel } from '../../signatories/utils/signatory-label.utils';
+import {
+  matchesSignatoryOrSubstituteStep,
+  resolveSignerAttribution,
+} from '../../signatories/utils/signatory-substitute.utils';
 import { normalizeApprovalStages } from '../../workflow/utils/stage-normalization.utils';
-import { resolveAdviserActorAuditContext } from '../../organizations/services/organization.service';
+import {
+  assertAdviserCanApproveForOrg,
+  resolveAdviserActorAuditContext,
+} from '../../organizations/services/organization.service';
 import {
   resolveSignatoryDecisionCapabilities,
   applySingleApprovalDemotion,
@@ -20,6 +27,7 @@ import {
   doc,
   getDocs,
   getDoc,
+  getDocFromCache,
   setDoc,
   updateDoc,
   deleteDoc,
@@ -65,6 +73,23 @@ export const PROPOSALS_COLLECTION = ACTIVITIES_COLLECTION;
 export const EVENTS_COLLECTION = ACTIVITIES_COLLECTION;
 
 export { sanitizeFirestorePayload };
+
+function isFirestoreQuotaError(err: any): boolean {
+  const code = String(err?.code || '').toLowerCase();
+  const msg = String(err?.message || '').toLowerCase();
+  return code === 'resource-exhausted' || msg.includes('quota exceeded') || msg.includes('resource-exhausted');
+}
+
+async function getDocSafe(ref: ReturnType<typeof doc>) {
+  try {
+    return await getDoc(ref);
+  } catch (err: any) {
+    if (isFirestoreQuotaError(err)) {
+      return await getDocFromCache(ref);
+    }
+    throw err;
+  }
+}
 
 /**
  * Formats a clean display name for notifications and tables.
@@ -115,7 +140,7 @@ export async function syncProposalToEventsCollection(
   if (!proposal.id) return;
   try {
     const eventDocRef = doc(db, EVENTS_COLLECTION, proposal.id);
-    const existingSnap = await getDoc(eventDocRef);
+    const existingSnap = await getDocSafe(eventDocRef);
     const existingData = existingSnap.exists() ? existingSnap.data() : {};
 
     // Sessions are only created when an activity is approved and attendance scanners are configured
@@ -1233,6 +1258,13 @@ export async function endorseProposal(
     signatureUrl?: string;
     canApproveProposal?: boolean;
     approvalDecision?: 'approve' | 'forward';
+    actingAsSubstitute?: boolean;
+    substituteUid?: string;
+    delegatedForSignatoryId?: string;
+    delegatedForSignatoryUid?: string;
+    delegatedForSignatoryName?: string;
+    delegatedForSignatoryEmail?: string;
+    delegatedForRoleTitle?: string;
   },
   remarks = '',
   approvalDecision?: 'approve' | 'forward'
@@ -1245,23 +1277,17 @@ export async function endorseProposal(
   approvedBySignatoryName?: string;
 }> {
   const docRef = doc(db, PROPOSALS_COLLECTION, proposalId);
-  const signerUid = signatory.id || signatory.uid || '';
-  const signerEmail = (signatory.email || '').toLowerCase();
+  const signerAttr = resolveSignerAttribution(signatory);
+  const signerUid = signerAttr.signerUid || signatory.id || signatory.uid || '';
+  const userUid = signerUid;
+  const signerName = signerAttr.signerName || signatory.name || signatory.email || 'Signatory';
+  const signerRoleTitle = signerAttr.signerRoleTitle || signatory.roleTitle || signatory.role || 'Signatory';
+  const signerEmail = signerAttr.signerEmail || (signatory.email || '').toLowerCase();
   const decision = approvalDecision || signatory.approvalDecision;
 
-  const matchesSignatory = (s: any) => {
-    if (signerUid && s.signatoryUid === signerUid) return true;
-    if (signerEmail && s.signatoryEmail?.toLowerCase() === signerEmail) return true;
-    if (signatory.role && s.role === signatory.role) return true;
-    return false;
-  };
+  const matchesSignatory = (s: any) => matchesSignatoryOrSubstituteStep(s, signatory);
 
-  // Atomic Firestore transaction prevents concurrent parallel approvers from double-approving
-  const txResult = await runTransaction(db, async (tx) => {
-    const snap = await tx.get(docRef);
-    if (!snap.exists()) throw new Error('Proposal not found');
-
-    const data = snap.data() as ActivityProposal;
+  const computeEndorseUpdate = (data: ActivityProposal) => {
     const chain = [...(data.approvalChain || [])];
     if (chain.length === 0) throw new Error('No approval steps found on this proposal');
 
@@ -1334,12 +1360,23 @@ export async function endorseProposal(
     let updatedStep: Record<string, any> = {
       ...targetStep,
       status: newStatus,
-      signatoryUid: signerUid || targetStep.signatoryUid || '',
+      signatoryUid: signerAttr.actedAsSubstitute
+        ? (signerAttr.originalSignatoryUid || targetStep.signatoryUid || signerUid)
+        : (signerUid || targetStep.signatoryUid || ''),
       signedByUid: signerUid || targetStep.signatoryUid || '',
-      signatoryName: signatory.name || targetStep.signatoryName || '',
-      signedByName: signatory.name || targetStep.signatoryName || '',
-      signatoryEmail: signatory.email || targetStep.signatoryEmail || '',
+      signatoryName: signerName || targetStep.signatoryName || '',
+      signedByName: signerName || targetStep.signatoryName || '',
+      signatoryEmail: signerEmail || targetStep.signatoryEmail || '',
       signedByEmail: signerEmail || targetStep.signatoryEmail || '',
+      ...(signerAttr.actedAsSubstitute
+        ? {
+            roleTitle: signerRoleTitle,
+            actedAsSubstitute: true,
+            originalSignatoryUid: signerAttr.originalSignatoryUid || targetStep.signatoryUid || '',
+            originalSignatoryName: signerAttr.originalSignatoryName || targetStep.signatoryName || '',
+            originalSignatoryEmail: signerAttr.originalSignatoryEmail || targetStep.signatoryEmail || '',
+          }
+        : {}),
       signedAt,
     };
 
@@ -1442,7 +1479,7 @@ export async function endorseProposal(
       }
     }
 
-    // 5. Commit atomically inside transaction
+    // 5. Build sanitized updates payload
     const rawUpdates: any = {
       approvalChain: sanitizedChain,
       currentStepIndex: targetStepIdx + 1,
@@ -1468,9 +1505,9 @@ export async function endorseProposal(
     }
 
     const updates = sanitizeFirestorePayload(rawUpdates);
-    tx.update(docRef, updates);
 
     return {
+      updates,
       data,
       sanitizedChain,
       targetStepIdx,
@@ -1483,7 +1520,29 @@ export async function endorseProposal(
       wasCoercedByPriorApproval,
       approvedBySignatoryName: capabilities.approvedBySignatoryName,
     };
-  });
+  };
+
+  // Atomic Firestore transaction prevents concurrent parallel approvers from double-approving;
+  // falls back to cache-backed getDocSafe + updateDoc when Firestore REST BatchGetDocuments hits resource-exhausted.
+  let txResult: ReturnType<typeof computeEndorseUpdate>;
+  try {
+    txResult = await runTransaction(db, async (tx) => {
+      const snap = await tx.get(docRef);
+      if (!snap.exists()) throw new Error('Proposal not found');
+      const computed = computeEndorseUpdate(snap.data() as ActivityProposal);
+      tx.update(docRef, computed.updates);
+      return computed;
+    });
+  } catch (txErr: any) {
+    if (!isFirestoreQuotaError(txErr)) {
+      throw txErr;
+    }
+    console.warn('[endorseProposal] Transaction hit Firestore quota limit; falling back to cache-backed updateDoc.');
+    const snap = await getDocSafe(docRef);
+    if (!snap.exists()) throw new Error('Proposal not found');
+    txResult = computeEndorseUpdate(snap.data() as ActivityProposal);
+    await updateDoc(docRef, txResult.updates);
+  }
 
   const {
     data,
@@ -2620,6 +2679,8 @@ export async function approveAndForwardProposalByAdviser(
   }
   if (!data) throw new Error('Activity Proposal not found.');
 
+  await assertAdviserCanApproveForOrg(data.hostingOrgId || data.organizationId, adviser);
+
   const isOrgDirectSas =
     data.fundingSource === 'organization_funds' ||
     data.fundingSource === 'student_contributions' ||
@@ -2804,6 +2865,8 @@ export async function returnProposalByAdviser(
   }
   if (!data) throw new Error('Activity Proposal not found.');
 
+  await assertAdviserCanApproveForOrg(data.hostingOrgId || data.organizationId, adviser);
+
   const nowIso = new Date().toISOString();
   const effectiveDeadline =
     returnDeadline || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
@@ -2949,6 +3012,8 @@ export async function rejectProposalByAdviser(
     if (fbSnap.exists()) data = fbSnap.data();
   }
   if (!data) throw new Error('Activity Proposal not found.');
+
+  await assertAdviserCanApproveForOrg(data.hostingOrgId || data.organizationId, adviser);
 
   const nowIso = new Date().toISOString();
   const adviserReview = {

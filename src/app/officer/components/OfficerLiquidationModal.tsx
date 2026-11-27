@@ -536,6 +536,34 @@ export default function OfficerLiquidationModal({
     selectedEvent?.id || ''
   );
 
+  const {
+    approvedRequests: approvedEventSbrs = [],
+    disbursedRequests: disbursedEventSbrs = [],
+    disbursedTotal: liveDisbursedSupplementalTotal = 0,
+    awaitingReleaseRequests: awaitingReleaseSbrs = [],
+    loading: sbrStreamLoading,
+  } = useEventSupplementalBudgets(selectedEvent?.id);
+
+  // Only disbursed/acknowledged SBRs count toward Financial Liquidation budget ceiling
+  const liveSupplementalTotal = useMemo(() => {
+    if (!selectedEvent) return 0;
+    if (!sbrStreamLoading) return liveDisbursedSupplementalTotal;
+    return Math.max(0, Number((selectedEvent as any)?.supplementalBudgetTotal) || 0);
+  }, [selectedEvent, sbrStreamLoading, liveDisbursedSupplementalTotal]);
+
+  const liveEffectiveApprovedBudget = useMemo(() => {
+    if (!selectedEvent) return 0;
+    const base = getEventBaseApprovedBudget(selectedEvent);
+    if (
+      base > 0 ||
+      liveSupplementalTotal > 0 ||
+      (selectedEvent as any)?.fundingSource === 'zero_budget'
+    ) {
+      return Math.round((base + liveSupplementalTotal) * 100) / 100;
+    }
+    return calculateEventBudget(selectedEvent);
+  }, [selectedEvent, liveSupplementalTotal]);
+
   // Derive active report from prop, tracked ID, linked event, or existing list (prefer live stream doc)
   const effectiveReport = useMemo(() => {
     if (editingReport) {
@@ -643,7 +671,7 @@ export default function OfficerLiquidationModal({
     ) {
       return;
     }
-    const suppTotal = Math.max(0, Number((selectedEvent as any)?.supplementalBudgetTotal) || 0);
+    const suppTotal = liveSupplementalTotal;
     const computedBasis = Math.round((actualContribCollected + retainedContribTopUp + suppTotal) * 100) / 100;
     setAllocatedBudget(computedBasis);
     setAmountAdvanced(computedBasis);
@@ -654,6 +682,41 @@ export default function OfficerLiquidationModal({
     eventPayablesLoading,
     actualContribCollected,
     retainedContribTopUp,
+    liveSupplementalTotal,
+    activeDisbursementVoucher?.amountDisbursed,
+  ]);
+
+  // Keep allocatedBudget & amountAdvanced live-synced with disbursed/acknowledged SBRs for draft reports
+  useEffect(() => {
+    if (
+      !isOpen ||
+      !selectedEvent ||
+      isEffectiveReadOnly ||
+      isStudentContributionSource ||
+      sbrStreamLoading
+    ) {
+      return;
+    }
+    if (effectiveReport && effectiveReport.status !== 'draft') {
+      return;
+    }
+    setAllocatedBudget(liveEffectiveApprovedBudget);
+    const primaryDisbursed = Number(activeDisbursementVoucher?.amountDisbursed || 0);
+    const targetAdvanced =
+      primaryDisbursed > 0
+        ? Math.round((primaryDisbursed + liveSupplementalTotal) * 100) / 100
+        : liveEffectiveApprovedBudget;
+    setAmountAdvanced(targetAdvanced);
+  }, [
+    isOpen,
+    selectedEvent,
+    isEffectiveReadOnly,
+    isStudentContributionSource,
+    sbrStreamLoading,
+    effectiveReport?.id,
+    effectiveReport?.status,
+    liveEffectiveApprovedBudget,
+    liveSupplementalTotal,
     activeDisbursementVoucher?.amountDisbursed,
   ]);
 
@@ -746,7 +809,8 @@ export default function OfficerLiquidationModal({
     [selectedEvent]
   );
 
-  const canSubmitLiquidation = isConcluded && !hasPendingSbr;
+  const hasAwaitingReleaseSbr = awaitingReleaseSbrs.length > 0;
+  const canSubmitLiquidation = isConcluded && !hasPendingSbr && !hasAwaitingReleaseSbr;
 
   const isSelectedEventExempt = useMemo(() => {
     return isEventLiquidationExempt(selectedEvent);
@@ -1326,54 +1390,59 @@ export default function OfficerLiquidationModal({
     };
   }, [selectedEvent, effectiveReport, editingReport, userRole, userName, effectiveIsAdviser, isSasCreator, orgId, todayStr, resolvedSasAdminName]);
 
-  const { approvedRequests: approvedEventSbrs = [] } = useEventSupplementalBudgets(selectedEvent?.id);
-
-  // Extract proposed baseline items from selected event + approved Supplemental Budget items
+  // Extract proposed baseline items from selected event + disbursed/acknowledged Supplemental Budget items
   const proposedBaselineItems = useMemo(() => {
     if (!selectedEvent) return [];
 
+    const isZeroBudgetBase =
+      (selectedEvent as any)?.fundingSource === 'zero_budget' ||
+      getEventBaseApprovedBudget(selectedEvent) <= 0;
+
     let baseItems: Array<{ id: string; title: string; baselineAmount: number }> = [];
 
-    // Check budgetItems
-    if (Array.isArray(selectedEvent.budgetItems) && selectedEvent.budgetItems.length > 0) {
-      baseItems = selectedEvent.budgetItems.map((bi: any, idx: number) => {
-        const allocated = Number(
-          bi.approvedAmount || bi.totalCost || (Number(bi.quantity || 1) * Number(bi.unitCost || 0)) || 0
-        );
-        return {
-          id: bi.id || `prop_bi_${idx}`,
-          title: bi.item || bi.description || `Budget Item ${idx + 1}`,
-          baselineAmount: allocated,
-        };
-      });
-    } else if (
-      Array.isArray(selectedEvent.financialProjections?.expenses) &&
-      selectedEvent.financialProjections.expenses.length > 0
-    ) {
-      // Check financialProjections.expenses
-      baseItems = selectedEvent.financialProjections.expenses.map((exp: any, idx: number) => ({
-        id: exp.id || `prop_exp_${idx}`,
-        title: exp.description || exp.item || `Proposed Item ${idx + 1}`,
-        baselineAmount: Number(exp.totalAmount || exp.thisYearProposed || 0),
-      }));
-    } else if (
-      Array.isArray((selectedEvent as any).budgetCustodians) &&
-      (selectedEvent as any).budgetCustodians.length > 0
-    ) {
-      // Check budgetCustodians
-      baseItems = (selectedEvent as any).budgetCustodians.map((c: any, idx: number) => ({
-        id: c.id || `prop_cust_${idx}`,
-        title: c.purpose || c.item || `Allocation ${idx + 1}`,
-        baselineAmount: Number(c.allocatedAmount || 0),
-      }));
+    if (!isZeroBudgetBase) {
+      // Check budgetItems
+      if (Array.isArray(selectedEvent.budgetItems) && selectedEvent.budgetItems.length > 0) {
+        baseItems = selectedEvent.budgetItems.map((bi: any, idx: number) => {
+          const allocated = Number(
+            bi.approvedAmount || bi.totalCost || (Number(bi.quantity || 1) * Number(bi.unitCost || 0)) || 0
+          );
+          return {
+            id: bi.id || `prop_bi_${idx}`,
+            title: bi.item || bi.description || `Budget Item ${idx + 1}`,
+            baselineAmount: allocated,
+          };
+        });
+      } else if (
+        Array.isArray(selectedEvent.financialProjections?.expenses) &&
+        selectedEvent.financialProjections.expenses.length > 0
+      ) {
+        // Check financialProjections.expenses
+        baseItems = selectedEvent.financialProjections.expenses.map((exp: any, idx: number) => ({
+          id: exp.id || `prop_exp_${idx}`,
+          title: exp.description || exp.item || `Proposed Item ${idx + 1}`,
+          baselineAmount: Number(exp.totalAmount || exp.thisYearProposed || 0),
+        }));
+      } else if (
+        Array.isArray((selectedEvent as any).budgetCustodians) &&
+        (selectedEvent as any).budgetCustodians.length > 0
+      ) {
+        // Check budgetCustodians
+        baseItems = (selectedEvent as any).budgetCustodians.map((c: any, idx: number) => ({
+          id: c.id || `prop_cust_${idx}`,
+          title: c.purpose || c.item || `Allocation ${idx + 1}`,
+          baselineAmount: Number(c.allocatedAmount || 0),
+        }));
+      }
     }
 
     return mergeLiquidationBaselineWithSupplementalItems(
       baseItems,
-      approvedEventSbrs,
-      (selectedEvent as any).supplementalExpenseItems || []
+      disbursedEventSbrs,
+      sbrStreamLoading ? ((selectedEvent as any).supplementalExpenseItems || []) : [],
+      { isZeroBudgetBase }
     );
-  }, [selectedEvent, approvedEventSbrs]);
+  }, [selectedEvent, disbursedEventSbrs, sbrStreamLoading]);
 
   // Dynamic category list: Proposed baseline items + Other / General Expenses (or fallback categories)
   const categoriesList = useMemo(() => {
@@ -1905,6 +1974,17 @@ export default function OfficerLiquidationModal({
     if (shouldSubmit) {
       if (hasPendingSbr) {
         showValidationError('Cannot submit liquidation while a Supplemental Budget Request is still pending approval. Please resolve or withdraw the pending supplemental request first.');
+        return;
+      }
+      if (hasAwaitingReleaseSbr) {
+        const firstAwaiting = awaitingReleaseSbrs[0];
+        const stepMsg =
+          firstAwaiting?.fundingSource === 'organization_funds'
+            ? `acknowledge and deduct ${firstAwaiting.referenceCode} in Officer Finance Center`
+            : `upload the dedicated Supplemental Disbursement Voucher for ${firstAwaiting?.referenceCode || 'the approved SBR'}`;
+        showValidationError(
+          `Cannot submit liquidation while an approved Supplemental Budget Request is awaiting fund release. Please ${stepMsg} first.`
+        );
         return;
       }
       if (!canSubmitLiquidation) {
@@ -2474,14 +2554,14 @@ export default function OfficerLiquidationModal({
                       placeholder="0.00"
                     />
                   </div>
-                  {Number((selectedEvent as any)?.supplementalBudgetTotal || 0) > 0 && (
+                  {liveSupplementalTotal > 0 && (
                     <div className="mt-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] font-semibold text-emerald-800 flex items-center justify-between gap-2">
                       <span>
-                        Base {formatCurrency(getEventBaseApprovedBudget(selectedEvent))} + Supplemental{' '}
-                        {formatCurrency(Number((selectedEvent as any)?.supplementalBudgetTotal || 0))}
+                        Base {formatCurrency(getEventBaseApprovedBudget(selectedEvent))} + Disbursed Supplemental{' '}
+                        {formatCurrency(liveSupplementalTotal)}
                       </span>
                       <span className="font-extrabold">
-                        = {formatCurrency(getEventEffectiveApprovedBudget(selectedEvent))}
+                        = {formatCurrency(liveEffectiveApprovedBudget)}
                       </span>
                     </div>
                   )}
@@ -2490,6 +2570,22 @@ export default function OfficerLiquidationModal({
                       <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-600" />
                       <span>
                         A Supplemental Budget Request is pending approval. Resolve or withdraw it before submitting Financial Liquidation.
+                      </span>
+                    </div>
+                  )}
+                  {hasAwaitingReleaseSbr && (
+                    <div className="mt-1.5 px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] font-semibold text-amber-900 flex items-start gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-600 mt-0.5" />
+                      <span>
+                        {awaitingReleaseSbrs.map((s) => s.referenceCode).join(', ')} approved (+
+                        {formatCurrency(
+                          awaitingReleaseSbrs.reduce((sum, s) => sum + (Number(s.requestedAmount) || 0), 0)
+                        )}
+                        ), awaiting{' '}
+                        {awaitingReleaseSbrs.some((s) => s.fundingSource === 'organization_funds')
+                          ? 'Officer Finance Center acknowledgment'
+                          : 'dedicated Supplemental Disbursement Voucher upload'}{' '}
+                        before reflecting in Financial Liquidation.
                       </span>
                     </div>
                   )}

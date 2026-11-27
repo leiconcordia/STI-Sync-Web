@@ -140,7 +140,9 @@ export function hasSignatorySignedStep(step: any, session: any): boolean {
   const hasSigEvidence = Boolean(step.signedAt || step.signatureUrl);
   if (!isSignedStatus && !hasSigEvidence) return false;
 
-  const userUid = session.id || session.uid;
+  const userUid = session.actingAsSubstitute
+    ? (session.substituteUid || session.authUid || session.uid)
+    : (session.id || session.uid);
   const userEmail = (session.email || '').toLowerCase().trim();
   const userName = (session.name || '').toLowerCase().trim();
 

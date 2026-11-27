@@ -6,11 +6,13 @@ import {
   canRequestSupplementalBudget,
   cloneParentApSignatoryPipeline,
   doesSbrRequireSignatories,
+  filterMeaningfulBaseLiquidationItems,
   getEventBaseApprovedBudget,
   getEventEffectiveApprovedBudget,
   getPermittedSupplementalFundingSources,
   hasBlockingPendingSbrForLiquidation,
   isFundingSourcePermittedForSbr,
+  isSbrDisbursedForLiquidation,
   isSignatoryTurnForSbr,
   mergeBaseAndSupplementalAllocations,
   mergeLiquidationBaselineWithSupplementalItems,
@@ -319,6 +321,12 @@ test('merges approved SBR items into Liquidation Reference Guide categories and 
     status: 'approved',
     fundingSource: 'school_budget',
     requestedAmount: 4500,
+    ledgerDeducted: true,
+    disbursementVoucher: {
+      mode: 'separate',
+      chequeNumber: 'CHK-2026-881',
+      attachmentUrl: 'https://example.com/supp-voucher.pdf',
+    },
     allocations: [
       { bucketId: 'b1', bucketName: 'Cultural & Sports Misc Fee', fundType: 'misc_fee', allocatedAmount: 4500 },
     ],
@@ -371,4 +379,90 @@ test('merges approved SBR items into Liquidation Reference Guide categories and 
   assert.equal(suppRow.adjustment, 2500);
   assert.equal(suppRow.totalAmount, 2500);
   assert.match(suppRow.remarks, /SBR-2026-SAS-001/);
+});
+
+test('strict disbursement/acknowledgment gating for FL reflection & Non-Monetary duplicate General tab exclusion', () => {
+  // 1. School Budget & Retained Fund SBRs do NOT reflect in FL until dedicated Supplemental Voucher is uploaded & deducted
+  assert.equal(
+    isSbrDisbursedForLiquidation({
+      status: 'approved',
+      fundingSource: 'school_budget',
+      ledgerDeducted: false,
+    }),
+    false
+  );
+  assert.equal(
+    isSbrDisbursedForLiquidation({
+      status: 'approved',
+      fundingSource: 'school_budget',
+      ledgerDeducted: true,
+      disbursementVoucher: { mode: 'separate', chequeNumber: 'CHK-500', attachmentUrl: 'https://example.com/v.pdf' },
+    }),
+    true
+  );
+  assert.equal(
+    isSbrDisbursedForLiquidation({
+      status: 'approved',
+      fundingSource: 'retained_sao_fund',
+      ledgerDeducted: false,
+    }),
+    false
+  );
+
+  // 2. Club Treasury SBRs do NOT reflect in FL until Officer acknowledges & deducts in Finance Center
+  assert.equal(
+    isSbrDisbursedForLiquidation({
+      status: 'approved',
+      fundingSource: 'organization_funds',
+      ledgerDeducted: false,
+    }),
+    false
+  );
+  assert.equal(
+    isSbrDisbursedForLiquidation({
+      status: 'approved',
+      fundingSource: 'organization_funds',
+      ledgerDeducted: true,
+    }),
+    true
+  );
+
+  // 3. Non-Monetary AP (zero_budget) dummy ₱0 "Expense Item" row is excluded so FL has NO duplicate General tab
+  const dummyZeroBase = [{ id: 'prop_exp_0', title: 'Expense Item', baselineAmount: 0 }];
+  assert.deepEqual(filterMeaningfulBaseLiquidationItems(dummyZeroBase, true), []);
+  assert.deepEqual(filterMeaningfulBaseLiquidationItems(dummyZeroBase, false), []);
+
+  const unacknowledgedOrgSbr = {
+    id: 'sbr_org_1',
+    referenceCode: 'SBR-2026-ITG-001',
+    status: 'approved',
+    fundingSource: 'organization_funds',
+    requestedAmount: 2000,
+    ledgerDeducted: false,
+    additionalItems: [
+      { id: 'i1', description: 'ADDITIONAL FUNDS', quantity: 1, unit: 'lot', unitCost: 2000, totalAmount: 2000 },
+    ],
+  };
+
+  // Before acknowledgment -> FL baseline stays empty
+  assert.deepEqual(
+    mergeLiquidationBaselineWithSupplementalItems(dummyZeroBase, [unacknowledgedOrgSbr], [], {
+      isZeroBudgetBase: true,
+    }),
+    []
+  );
+
+  // After Finance Center acknowledgment -> ONLY the SBR card appears (no dummy "Expense Item" card, no "1 lot × ..." subtitle)
+  const acknowledgedOrgSbr = { ...unacknowledgedOrgSbr, ledgerDeducted: true };
+  const mergedAfterAck = mergeLiquidationBaselineWithSupplementalItems(
+    dummyZeroBase,
+    [acknowledgedOrgSbr],
+    [],
+    { isZeroBudgetBase: true }
+  );
+  assert.equal(mergedAfterAck.length, 1);
+  assert.equal(mergedAfterAck[0].title, 'ADDITIONAL FUNDS');
+  assert.equal(mergedAfterAck[0].baselineAmount, 2000);
+  assert.equal(mergedAfterAck[0].isSupplemental, true);
+  assert.equal(mergedAfterAck[0].qtyUnitLabel, undefined);
 });

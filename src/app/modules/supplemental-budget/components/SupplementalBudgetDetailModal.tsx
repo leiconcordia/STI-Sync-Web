@@ -69,14 +69,14 @@ const SBR_ADVISER_RETURN_STEPS = [
   {
     key: 'justification',
     stepNumber: 1,
-    label: 'Justification & Supporting Proof',
-    description: 'Reason category, justification narrative, and vendor quotation attachments',
+    label: 'Justification',
+    description: 'Detailed justification narrative for the supplemental funds',
   },
   {
     key: 'line_items',
     stepNumber: 2,
-    label: 'Additional Expense Line Items',
-    description: 'Quantities, unit prices, and line-item breakdowns',
+    label: 'Additional Expense Breakdown',
+    description: 'Expense descriptions, proposed additional amounts, and remarks',
   },
   {
     key: 'funding_source',
@@ -109,14 +109,15 @@ export default function SupplementalBudgetDetailModal({
   const [remarks, setRemarks] = useState('');
   const [decisionMode, setDecisionMode] = useState<'none' | 'return' | 'reject'>('none');
 
-  // Supplemental Voucher state (for approved school_budget SBRs)
-  const [voucherMode, setVoucherMode] = useState<'separate' | 'bundled_with_primary'>(
-    sbr?.disbursementVoucher?.mode || 'separate'
-  );
+  // Supplemental Voucher state (for approved school_budget / retained_sao_fund SBRs)
+  const todayStr = (() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  })();
   const [voucherNumber, setVoucherNumber] = useState(sbr?.disbursementVoucher?.voucherNumber || '');
   const [chequeNumber, setChequeNumber] = useState(sbr?.disbursementVoucher?.chequeNumber || '');
   const [releaseDate, setReleaseDate] = useState(
-    sbr?.disbursementVoucher?.releaseDate || new Date().toISOString().slice(0, 10)
+    sbr?.disbursementVoucher?.releaseDate || todayStr
   );
   const [voucherUrl, setVoucherUrl] = useState(sbr?.disbursementVoucher?.attachmentUrl || '');
   const [voucherFileName, setVoucherFileName] = useState(sbr?.disbursementVoucher?.fileName || '');
@@ -185,7 +186,7 @@ export default function SupplementalBudgetDetailModal({
 
   const canManageVoucher =
     sbr.status === 'approved' &&
-    sbr.fundingSource === 'school_budget' &&
+    (sbr.fundingSource === 'school_budget' || sbr.fundingSource === 'retained_sao_fund') &&
     (viewerRole === 'admin' || (viewerRole === 'adviser' && !sbr.isSasInstitutional));
 
   const fundingLabel =
@@ -312,10 +313,18 @@ export default function SupplementalBudgetDetailModal({
   const handleUploadVoucherFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error('File exceeds 10MB limit.');
+      return;
+    }
     setUploadingVoucher(true);
     try {
-      const res = await uploadToCloudinary(file, 'sti_sync_supplemental_vouchers');
-      setVoucherUrl(res.secure_url);
+      const res = await uploadToCloudinary(file, {
+        folder: 'disbursements/supplemental-vouchers',
+        acceptedTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'],
+        maxBytes: 10 * 1024 * 1024,
+      });
+      setVoucherUrl(res.secureUrl);
       setVoucherFileName(file.name);
       toast.success(`Uploaded voucher ${file.name}`);
     } catch (err: any) {
@@ -327,8 +336,20 @@ export default function SupplementalBudgetDetailModal({
   };
 
   const handleSaveVoucher = async () => {
-    if (voucherMode === 'separate' && !voucherNumber.trim() && !chequeNumber.trim() && !voucherUrl) {
-      toast.error('Enter Voucher/Cheque number or upload the Disbursement Voucher copy.');
+    if (!voucherNumber.trim() && !chequeNumber.trim()) {
+      toast.error('Please enter the Cheque # or Voucher # for this Supplemental Disbursement Voucher.');
+      return;
+    }
+    if (!releaseDate) {
+      toast.error('Please select the Date Released / Disbursed.');
+      return;
+    }
+    if (releaseDate > todayStr) {
+      toast.error('Date Released cannot be in the future. Please select today or an earlier date.');
+      return;
+    }
+    if (!voucherUrl) {
+      toast.error('Please upload the official Supplemental Disbursement Voucher copy (PDF/Image).');
       return;
     }
     setBusy(true);
@@ -336,17 +357,17 @@ export default function SupplementalBudgetDetailModal({
       await attachSupplementalDisbursementVoucher(
         sbr.id,
         {
-          mode: voucherMode,
-          voucherNumber: voucherMode === 'separate' ? voucherNumber.trim() : undefined,
-          chequeNumber: voucherMode === 'separate' ? chequeNumber.trim() : undefined,
-          releaseDate: voucherMode === 'separate' ? releaseDate : undefined,
-          attachmentUrl: voucherMode === 'separate' ? voucherUrl || undefined : undefined,
-          fileName: voucherMode === 'separate' ? voucherFileName || undefined : undefined,
+          mode: 'separate',
+          voucherNumber: voucherNumber.trim() || undefined,
+          chequeNumber: chequeNumber.trim() || undefined,
+          releaseDate,
+          attachmentUrl: voucherUrl,
+          fileName: voucherFileName || undefined,
           disbursedAmount: sbr.requestedAmount,
         },
         actor
       );
-      toast.success('Supplemental Disbursement Voucher updated.');
+      toast.success('Supplemental Disbursement Voucher attached! Funds deducted and reflected in Financial Liquidation.');
       onActionComplete?.();
     } catch (err: any) {
       toast.error(err?.message || 'Failed to save Supplemental Voucher');
@@ -430,7 +451,13 @@ export default function SupplementalBudgetDetailModal({
                 {formatPHP(projectedTotal)}
               </div>
               <div className="text-[11px] text-emerald-700 mt-0.5">
-                {sbr.ledgerDeducted ? 'Encumbered in ledger' : 'Pending final approval'}
+                {sbr.ledgerDeducted
+                  ? 'Deducted & reflected in Financial Liquidation'
+                  : sbr.status === 'approved'
+                  ? sbr.fundingSource === 'organization_funds'
+                    ? 'Awaiting Finance Center acknowledgment'
+                    : 'Awaiting Supplemental Disbursement Voucher'
+                  : 'Pending final approval'}
               </div>
             </div>
           </div>
@@ -460,15 +487,17 @@ export default function SupplementalBudgetDetailModal({
             </div>
           )}
 
-          {/* Justification & Supporting Proof */}
+          {/* Justification */}
           <div className="p-4 rounded-xl border border-slate-200 space-y-3">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                Justification & Rationale
+                Justification &amp; Rationale
               </h3>
-              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-700">
-                {SUPPLEMENTAL_REASON_LABELS[sbr.reasonCategory] || sbr.reasonCategory}
-              </span>
+              {sbr.reasonCategory && sbr.reasonCategory !== 'other' && (
+                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-700">
+                  {SUPPLEMENTAL_REASON_LABELS[sbr.reasonCategory] || sbr.reasonCategory}
+                </span>
+              )}
             </div>
             <p className="text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">
               {sbr.justification}
@@ -490,34 +519,59 @@ export default function SupplementalBudgetDetailModal({
             )}
           </div>
 
-          {/* Line Items Table */}
+          {/* Line Items Table (AP Step 6 Style) */}
           <div className="border border-slate-200 rounded-xl overflow-hidden">
             <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 text-xs font-bold text-slate-700">
-              Additional Expense Line Items
+              Additional Expense Breakdown
             </div>
             <table className="w-full text-xs">
-              <thead className="bg-slate-50/50 border-b border-slate-200 text-slate-500">
+              <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold">
                 <tr>
-                  <th className="text-left px-4 py-2 font-semibold">Item Description</th>
-                  <th className="text-right px-4 py-2 font-semibold">Qty</th>
-                  <th className="text-right px-4 py-2 font-semibold">Unit Cost</th>
-                  <th className="text-right px-4 py-2 font-semibold">Subtotal</th>
+                  <th className="text-left px-4 py-2">Description</th>
+                  <th className="text-right px-4 py-2 bg-blue-100/80 text-[#001A4D] border-x border-blue-200">
+                    Proposed Additional Budget
+                  </th>
+                  <th className="text-right px-4 py-2">Total Amount</th>
+                  <th className="text-left px-4 py-2">Remarks</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {(sbr.additionalItems || []).map((item) => (
-                  <tr key={item.id}>
-                    <td className="px-4 py-2.5 font-medium text-slate-800">{item.description}</td>
-                    <td className="px-4 py-2.5 text-right text-slate-600">
-                      {item.quantity} {item.unit}
-                    </td>
-                    <td className="px-4 py-2.5 text-right text-slate-600">{formatPHP(item.unitCost)}</td>
-                    <td className="px-4 py-2.5 text-right font-bold text-slate-800">
-                      {formatPHP(item.totalAmount)}
-                    </td>
-                  </tr>
-                ))}
+                {(sbr.additionalItems || []).map((item) => {
+                  const isLegacyQtyItem =
+                    Number(item.quantity) > 1 ||
+                    (item.unit && item.unit.toLowerCase() !== 'lot' && Number(item.unitCost) !== Number(item.totalAmount));
+                  const legacyNote = isLegacyQtyItem
+                    ? `${item.quantity} ${item.unit || 'pcs'} × ${formatPHP(item.unitCost)}`
+                    : '';
+                  const remarksText = [item.remarks, legacyNote].filter(Boolean).join(' • ');
+                  return (
+                    <tr key={item.id}>
+                      <td className="px-4 py-2.5 font-medium text-slate-800">{item.description}</td>
+                      <td className="px-4 py-2.5 text-right font-bold text-[#001A4D] bg-blue-50/30 border-x border-blue-100">
+                        {formatPHP(item.totalAmount)}
+                      </td>
+                      <td className="px-4 py-2.5 text-right font-bold text-slate-800">
+                        {formatPHP(item.totalAmount)}
+                      </td>
+                      <td className="px-4 py-2.5 text-slate-500">{remarksText || '—'}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
+              <tfoot className="bg-slate-50 border-t border-slate-200 font-bold">
+                <tr>
+                  <td className="px-4 py-2 text-right uppercase tracking-wider text-[11px] text-slate-500">
+                    Subtotals:
+                  </td>
+                  <td className="px-4 py-2 text-right font-black text-[#001A4D] bg-blue-100/80 border-x border-blue-200">
+                    {formatPHP(sbr.requestedAmount)}
+                  </td>
+                  <td className="px-4 py-2 text-right font-black text-rose-800">
+                    {formatPHP(sbr.requestedAmount)}
+                  </td>
+                  <td />
+                </tr>
+              </tfoot>
             </table>
           </div>
 
@@ -647,7 +701,7 @@ export default function SupplementalBudgetDetailModal({
                 <p className="text-xs text-slate-600 mt-0.5">
                   {sbr.requiresSignatories
                     ? 'Verify Misc Fee bucket availability, adjust the signatory pipeline if needed, and forward to Institutional Signatories.'
-                    : 'Approve directly to immediately encumber the supplemental delta from the Club Treasury ledger.'}
+                    : 'Approve directly. The organization will then acknowledge and deduct this supplemental budget in the Finance Center to reflect it in Financial Liquidation.'}
                 </p>
               </div>
 
@@ -711,7 +765,7 @@ export default function SupplementalBudgetDetailModal({
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
                 >
                   {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
-                  {sbr.requiresSignatories ? 'Endorse & Forward to Signatories' : 'Approve & Encumber Funds'}
+                  {sbr.requiresSignatories ? 'Endorse & Forward to Signatories' : 'Approve Supplemental Budget'}
                 </button>
                 <button
                   type="button"
@@ -845,76 +899,72 @@ export default function SupplementalBudgetDetailModal({
             </div>
           )}
 
-          {/* SUPPLEMENTAL DISBURSEMENT VOUCHER PANEL (Approved school_budget SBR) */}
-          {sbr.status === 'approved' && sbr.fundingSource === 'school_budget' && (
-            <div className="p-5 rounded-2xl bg-emerald-50/50 border border-emerald-200 space-y-4">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <div className="flex items-center gap-2">
-                  <Receipt className="w-4 h-4 text-emerald-700" />
-                  <h4 className="text-sm font-bold text-emerald-950">
-                    Supplemental Disbursement Voucher
-                  </h4>
-                </div>
-                {sbr.disbursementVoucher ? (
-                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800">
-                    {sbr.disbursementVoucher.mode === 'bundled_with_primary'
-                      ? 'Bundled with Primary Voucher'
-                      : `Voucher Attached (${sbr.disbursementVoucher.chequeNumber || sbr.disbursementVoucher.voucherNumber || 'Recorded'})`}
-                  </span>
-                ) : (
-                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800">
-                    Pending Supplemental Voucher
-                  </span>
-                )}
-              </div>
-
-              {canManageVoucher ? (
-                <div className="space-y-3">
-                  <div className="flex flex-wrap gap-3 text-xs">
-                    <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-slate-700">
-                      <input
-                        type="radio"
-                        checked={voucherMode === 'separate'}
-                        onChange={() => setVoucherMode('separate')}
-                      />
-                      Separate Supplemental Cheque / Voucher
-                    </label>
-                    <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-slate-700">
-                      <input
-                        type="radio"
-                        checked={voucherMode === 'bundled_with_primary'}
-                        onChange={() => setVoucherMode('bundled_with_primary')}
-                      />
-                      Bundled with Primary Event Voucher
-                    </label>
+          {/* SUPPLEMENTAL DISBURSEMENT VOUCHER PANEL (Approved school_budget / retained_sao_fund SBR) */}
+          {sbr.status === 'approved' &&
+            (sbr.fundingSource === 'school_budget' || sbr.fundingSource === 'retained_sao_fund') && (
+              <div className="p-5 rounded-2xl bg-emerald-50/50 border border-emerald-200 space-y-4">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <Receipt className="w-4 h-4 text-emerald-700" />
+                    <h4 className="text-sm font-bold text-emerald-950">
+                      Dedicated Supplemental Disbursement Voucher
+                    </h4>
                   </div>
+                  {sbr.disbursementVoucher ? (
+                    <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800">
+                      {sbr.disbursementVoucher.mode === 'bundled_with_primary'
+                        ? 'Bundled with Primary Voucher (Legacy)'
+                        : `Voucher Attached (${sbr.disbursementVoucher.chequeNumber || sbr.disbursementVoucher.voucherNumber || 'Recorded'})`}
+                    </span>
+                  ) : (
+                    <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800">
+                      Pending Supplemental Voucher — Not Yet Deducted
+                    </span>
+                  )}
+                </div>
 
-                  {voucherMode === 'separate' && (
+                {canManageVoucher && !sbr.disbursementVoucher ? (
+                  <div className="space-y-3">
+                    <p className="text-xs text-slate-600">
+                      Upload the dedicated Supplemental Disbursement Voucher for{' '}
+                      <strong>{sbr.referenceCode}</strong> (+{formatPHP(sbr.requestedAmount)}). Funds are
+                      deducted from {fundingLabel} and reflected in Financial Liquidation only upon attaching
+                      this voucher.
+                    </p>
+
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                       <input
                         type="text"
-                        placeholder="Voucher #"
-                        value={voucherNumber}
-                        onChange={(e) => setVoucherNumber(e.target.value)}
-                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
-                      />
-                      <input
-                        type="text"
-                        placeholder="Cheque #"
+                        placeholder="Cheque / Ref # *"
                         value={chequeNumber}
                         onChange={(e) => setChequeNumber(e.target.value)}
                         className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
                       />
                       <input
-                        type="date"
-                        value={releaseDate}
-                        onChange={(e) => setReleaseDate(e.target.value)}
+                        type="text"
+                        placeholder="Voucher # (Optional)"
+                        value={voucherNumber}
+                        onChange={(e) => setVoucherNumber(e.target.value)}
                         className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
                       />
+                      <input
+                        type="date"
+                        max={todayStr}
+                        value={releaseDate}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val > todayStr) {
+                            toast.error('Date Released cannot be in the future. Please select today or an earlier date.');
+                            setReleaseDate(todayStr);
+                          } else {
+                            setReleaseDate(val);
+                          }
+                        }}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+                        title="Future dates banned (Today or earlier only)"
+                      />
                     </div>
-                  )}
 
-                  {voucherMode === 'separate' && (
                     <div className="flex items-center gap-3 flex-wrap">
                       <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-dashed border-emerald-400 bg-white text-xs font-semibold text-emerald-800 cursor-pointer hover:bg-emerald-50">
                         {uploadingVoucher ? (
@@ -922,7 +972,7 @@ export default function SupplementalBudgetDetailModal({
                         ) : (
                           <Upload className="w-3.5 h-3.5" />
                         )}
-                        {voucherFileName || 'Upload Voucher Scan (PDF/Image)'}
+                        {voucherFileName || 'Upload Supplemental Voucher Scan (PDF/Image) *'}
                         <input
                           type="file"
                           accept="image/*,.pdf"
@@ -941,50 +991,52 @@ export default function SupplementalBudgetDetailModal({
                         </a>
                       )}
                     </div>
-                  )}
 
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={handleSaveVoucher}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-50"
-                  >
-                    <Send className="w-3.5 h-3.5" /> Save Supplemental Voucher Status
-                  </button>
-                </div>
-              ) : (
-                <div className="text-xs text-slate-600">
-                  {sbr.disbursementVoucher ? (
-                    <div className="space-y-1">
-                      <div>
-                        Mode:{' '}
-                        <strong>
-                          {sbr.disbursementVoucher.mode === 'bundled_with_primary'
-                            ? 'Bundled with Primary Event Voucher'
-                            : 'Separate Supplemental Voucher'}
-                        </strong>
+                    <button
+                      type="button"
+                      disabled={busy || uploadingVoucher}
+                      onClick={handleSaveVoucher}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-50 cursor-pointer"
+                    >
+                      <Send className="w-3.5 h-3.5" /> Attach Supplemental Voucher &amp; Deduct Funds
+                    </button>
+                  </div>
+                ) : (
+                  <div className="text-xs text-slate-600">
+                    {sbr.disbursementVoucher ? (
+                      <div className="space-y-1">
+                        <div>
+                          Record Type:{' '}
+                          <strong>
+                            {sbr.disbursementVoucher.mode === 'bundled_with_primary'
+                              ? 'Bundled with Primary Event Voucher (Legacy)'
+                              : 'Dedicated Supplemental Disbursement Voucher'}
+                          </strong>
+                        </div>
+                        {sbr.disbursementVoucher.chequeNumber && (
+                          <div>Cheque #: {sbr.disbursementVoucher.chequeNumber}</div>
+                        )}
+                        {sbr.disbursementVoucher.voucherNumber && (
+                          <div>Voucher #: {sbr.disbursementVoucher.voucherNumber}</div>
+                        )}
+                        {sbr.disbursementVoucher.attachmentUrl && (
+                          <a
+                            href={sbr.disbursementVoucher.attachmentUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-blue-700 font-semibold hover:underline inline-flex items-center gap-1"
+                          >
+                            View Voucher Document <ExternalLink className="w-3 h-3" />
+                          </a>
+                        )}
                       </div>
-                      {sbr.disbursementVoucher.chequeNumber && (
-                        <div>Cheque #: {sbr.disbursementVoucher.chequeNumber}</div>
-                      )}
-                      {sbr.disbursementVoucher.attachmentUrl && (
-                        <a
-                          href={sbr.disbursementVoucher.attachmentUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-blue-700 font-semibold hover:underline inline-flex items-center gap-1"
-                        >
-                          View Voucher Document <ExternalLink className="w-3 h-3" />
-                        </a>
-                      )}
-                    </div>
-                  ) : (
-                    <span>Awaiting SAS / Adviser to record the Supplemental Disbursement Voucher.</span>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
+                    ) : (
+                      <span>Awaiting SAS / Adviser to upload the dedicated Supplemental Disbursement Voucher.</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
           {/* Audit Timeline */}
           {sbr.history && sbr.history.length > 0 && (

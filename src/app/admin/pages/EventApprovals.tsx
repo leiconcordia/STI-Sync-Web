@@ -331,7 +331,7 @@ export function EventApprovals() {
 
   useEffect(() => {
     const tabParam = searchParams.get("tab");
-    if (tabParam && ["all", "urgent", "pending", "approved", "returned", "completed", "archived", "rejected", "drafts", "trash"].includes(tabParam)) {
+    if (tabParam && ["all", "urgent", "pending", "supplemental_budgets", "approved", "returned", "completed", "archived", "rejected", "drafts", "trash"].includes(tabParam)) {
       setActiveTab(tabParam as TabValue);
       setCurrentPage(1);
     }
